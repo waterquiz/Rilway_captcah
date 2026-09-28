@@ -1,0 +1,1531 @@
+<!doctype html><html lang="ru"><head><meta charset="UTF-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pure Solver</title><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"><link href="./css/app.8df9c6a7.css" rel="stylesheet"><link href="./css/chunk-vendors.8a3cab23.css" rel="stylesheet"><script>
+// Global browser shims for Electron environment
+window.global = window;
+window.__dirname = '/';
+window.__filename = '/index.html';
+window.process = window.process || { 
+    env: { NODE_ENV: 'production' }, 
+    platform: 'win32', 
+    cwd: function() { return '/'; } 
+};
+
+window.ipcRenderer = window.ipcRenderer || {
+    send: function(channel, data) { console.log('[IPC Mock Send]', channel, data); },
+    on: function(channel, listener) {},
+    once: function(channel, listener) {},
+    invoke: function(channel, data) {
+        if (channel === 'get-ct-config') return Promise.resolve({ panels: 12 });
+        if (channel === 'get-scroll-state') return Promise.resolve({ scrollY: 0, maxScrollY: 0 });
+        if (channel === 'is-window-maximized') return Promise.resolve(false);
+        return Promise.resolve({});
+    },
+    removeAllListeners: function() {}
+};
+globalThis.ipcRenderer = window.ipcRenderer;
+
+window.require = window.require || function(mod) {
+    if (mod === 'electron') {
+        return { ipcRenderer: window.ipcRenderer };
+    }
+    if (mod === 'fs') {
+        return {
+            existsSync: function() { return false; },
+            readFileSync: function() { return ''; },
+            writeFileSync: function() {}
+        };
+    }
+    if (mod === 'path') {
+        return {
+            join: function() { return Array.from(arguments).join('/'); },
+            resolve: function() { return Array.from(arguments).join('/'); }
+        };
+    }
+    if (mod === 'os') {
+        return { homedir: function() { return '/'; } };
+    }
+    return {};
+};
+globalThis.require = window.require;
+</script><style>/* CT Header Styles - Consistent with CaptchaKing */
+      :root {
+        --bg-color: #0f0f1b;
+        --title-bar-color: #0a0a14;
+        --primary-glow: #00ffff;
+        --border-color: rgba(0, 255, 255, 0.2);
+        --text-color: #d1d5db;
+        --text-muted: #8892b0;
+        --input-bg: rgba(255, 255, 255, 0.1);
+      }
+
+      #ct-title-bar {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        align-items: center;
+        -webkit-app-region: drag;
+        background-color: var(--title-bar-color);
+        height: 50px;
+        padding: 0 15px;
+        border-bottom: 1px solid var(--border-color);
+        flex-shrink: 0;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        z-index: 100;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+        user-select: none;
+        -webkit-user-select: none;
+      }
+
+      .ct-logo-container {
+        display: flex;
+        align-items: center;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+
+      .ct-logo-container img {
+        width: 32px;
+        height: 32px;
+        margin-right: 10px;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+
+      .ct-logo-container h1 {
+        font-size: 20px;
+        font-weight: bold;
+        text-shadow: 0 0 10px var(--primary-glow);
+        user-select: none;
+        -webkit-user-select: none;
+        color: var(--text-color);
+        margin: 0;
+      }
+
+      .ct-logo-container .typer-text {
+        color: var(--primary-glow);
+      }
+
+      .ct-app-switch-container {
+        margin-left: 15px;
+        -webkit-app-region: no-drag;
+      }
+
+      .ct-app-switch-btn {
+        background: linear-gradient(135deg, rgba(0, 255, 255, 0.1), rgba(0, 255, 255, 0.2));
+        border: 1px solid var(--primary-glow);
+        border-radius: 20px;
+        padding: 6px 15px;
+        color: var(--primary-glow);
+        font-size: 12px;
+        font-weight: bold;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+
+      .ct-app-switch-btn:hover {
+        background: linear-gradient(135deg, rgba(0, 255, 255, 0.2), rgba(0, 255, 255, 0.3));
+        box-shadow: 0 0 15px rgba(0, 255, 255, 0.5);
+        transform: translateY(-1px);
+      }
+
+      .ct-center-container {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 15px;
+        -webkit-app-region: drag;
+      }
+
+      .ct-controls-container {
+        -webkit-app-region: no-drag;
+      }
+
+      .ct-settings-group {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .ct-settings-group label {
+        color: var(--text-muted);
+        font-size: 13px;
+        font-weight: 500;
+      }
+
+      /* Expiration Timer Styles */
+      .ct-expiration-container {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 12px;
+        background: linear-gradient(135deg, rgba(0, 255, 255, 0.05), rgba(0, 255, 255, 0.1));
+        border: 1px solid var(--border-color);
+        border-radius: 20px;
+        -webkit-app-region: no-drag;
+      }
+
+      .ct-expiration-container i {
+        color: var(--primary-glow);
+        font-size: 14px;
+      }
+
+      .ct-timer-display {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--text-color);
+      }
+
+      /* Daily Task Styles */
+      .ct-daily-task-container {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 6px 12px;
+        background: linear-gradient(135deg, rgba(0, 255, 255, 0.05), rgba(0, 255, 255, 0.1));
+        border: 1px solid var(--border-color);
+        border-radius: 20px;
+        -webkit-app-region: no-drag;
+      }
+
+      .ct-daily-task-container i {
+        color: var(--primary-glow);
+        font-size: 14px;
+      }
+
+      .ct-daily-progress {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .ct-streak-count {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--text-color);
+        white-space: nowrap;
+      }
+
+      .ct-progress-bar {
+        width: 60px;
+        height: 6px;
+        background: rgba(255, 255, 255, 0.1);
+        border-radius: 3px;
+        overflow: hidden;
+      }
+
+      .ct-progress-fill {
+        height: 100%;
+        background: linear-gradient(90deg, var(--primary-glow), #00aaaa);
+        transition: width 0.3s ease;
+      }
+
+      .ct-upload-proof-btn {
+        background: transparent;
+        border: 1px solid var(--primary-glow);
+        color: var(--primary-glow);
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-size: 11px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        white-space: nowrap;
+      }
+
+      .ct-upload-proof-btn:hover {
+        background: rgba(0, 255, 255, 0.1);
+      }
+
+      .ct-upload-proof-btn.completed {
+        background: rgba(0, 255, 0, 0.2);
+        border-color: #00ff00;
+        color: #00ff00;
+      }
+
+      /* Balance Display */
+      .ct-balance-container {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 12px;
+        background: linear-gradient(135deg, rgba(0, 255, 255, 0.05), rgba(0, 255, 255, 0.1));
+        border: 1px solid var(--border-color);
+        border-radius: 20px;
+        -webkit-app-region: no-drag;
+      }
+
+      .ct-balance-container i {
+        color: var(--primary-glow);
+        font-size: 14px;
+      }
+
+      .ct-balance-container span {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--text-color);
+      }
+
+      .ct-balance-separator {
+        color: var(--text-muted);
+      }
+
+      #ct-panel-count {
+        width: 60px;
+        padding: 5px 10px;
+        background: var(--input-bg);
+        border: 1px solid var(--border-color);
+        border-radius: 4px;
+        color: var(--text-color);
+        font-size: 13px;
+        text-align: center;
+      }
+
+      #ct-panel-count:focus {
+        outline: none;
+        border-color: var(--primary-glow);
+        box-shadow: 0 0 5px rgba(0, 255, 255, 0.3);
+      }
+
+      #ct-create-panels-btn {
+        padding: 6px 12px;
+        background: linear-gradient(135deg, rgba(0, 255, 255, 0.1), rgba(0, 255, 255, 0.2));
+        border: 1px solid var(--primary-glow);
+        border-radius: 4px;
+        color: var(--primary-glow);
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s ease;
+      }
+
+      #ct-create-panels-btn:hover {
+        background: linear-gradient(135deg, rgba(0, 255, 255, 0.2), rgba(0, 255, 255, 0.3));
+        box-shadow: 0 0 10px rgba(0, 255, 255, 0.4);
+        transform: translateY(-1px);
+      }
+
+      #ct-create-panels-btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+        background: rgba(0, 255, 255, 0.1);
+        transform: none;
+      }
+
+      .ct-window-actions-container {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        -webkit-app-region: no-drag;
+      }
+
+      .ct-control-btn {
+        background: transparent;
+        border: none;
+        color: var(--text-muted);
+        font-size: 14px;
+        cursor: pointer;
+        padding: 8px 10px;
+        border-radius: 4px;
+        transition: all 0.2s ease;
+        -webkit-app-region: no-drag;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .ct-control-btn:hover {
+        background: rgba(255, 255, 255, 0.1);
+        color: var(--text-color);
+      }
+
+      #ct-settings-btn {
+        font-size: 22px;
+        background: transparent !important;
+        border: none;
+        color: var(--text-muted);
+        cursor: pointer;
+        padding: 6px 10px;
+        transition: color 0.2s ease;
+        box-shadow: none !important;
+        outline: none !important;
+      }
+
+      #ct-settings-btn:hover {
+        background: transparent !important;
+        color: var(--text-color);
+        box-shadow: none !important;
+      }
+
+      .ct-main-content {
+        margin-top: 50px;
+        height: calc(100vh - 50px);
+        overflow-y: auto;
+        overflow-x: hidden;
+        background: #080c14;
+        box-sizing: border-box;
+      }
+
+      #panels-grid {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 6px;
+        width: 100%;
+        padding: 6px;
+        box-sizing: border-box;
+      }
+
+      .panel-frame {
+        width: 100%;
+        height: 520px;
+        border: 1px solid #1e293b;
+        border-radius: 4px;
+        background: #0f0f1b;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+      }
+
+      body {
+        margin: 0;
+        padding: 0;
+        background-color: var(--bg-color);
+        color: var(--text-color);
+        font-family: 'Exo 2', sans-serif, 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        overflow: hidden;
+      }
+
+      #ct-scrollbar-container {
+        position: fixed;
+        right: 0;
+        top: 50px;
+        bottom: 0;
+        width: 14px;
+        background: rgba(15, 15, 27, 0.5);
+        border-left: 1px solid rgba(255, 255, 255, 0.05);
+        z-index: 999999;
+        user-select: none;
+        display: none;
+      }
+
+      #ct-scrollbar-thumb {
+        position: absolute;
+        top: 0;
+        right: 3px;
+        width: 8px;
+        min-height: 30px;
+        background: rgba(255, 255, 255, 0.2);
+        border-radius: 4px;
+        cursor: pointer;
+        transition: background 0.2s ease, width 0.2s ease;
+      }
+
+      #ct-scrollbar-thumb:hover, #ct-scrollbar-thumb.active {
+        background: rgba(0, 255, 255, 0.5);
+        width: 10px;
+        right: 2px;
+      }
+    
+      /* Advanced Settings Modal Styles */
+      .ct-modal-overlay {
+        position: fixed;
+        top: 0; left: 0; right: 0; bottom: 0;
+        background: rgba(4, 7, 13, 0.85);
+        backdrop-filter: blur(6px);
+        z-index: 1000000;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        animation: ctFadeIn 0.2s ease;
+      }
+      @keyframes ctFadeIn {
+        from { opacity: 0; transform: scale(0.98); }
+        to { opacity: 1; transform: scale(1); }
+      }
+      .ct-modal-card {
+        width: 94%;
+        max-width: 620px;
+        max-height: 88vh;
+        background: #0f172a;
+        border: 1px solid rgba(0, 255, 255, 0.35);
+        box-shadow: 0 10px 35px rgba(0, 255, 255, 0.18), 0 20px 40px rgba(0,0,0,0.85);
+        border-radius: 10px;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        color: #e2e8f0;
+        font-family: inherit;
+      }
+      .ct-modal-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 14px 20px;
+        background: #0b1120;
+        border-bottom: 1px solid rgba(0, 255, 255, 0.2);
+      }
+      .ct-modal-title {
+        font-size: 16px;
+        font-weight: 700;
+        color: #00ffff;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .ct-modal-close {
+        background: transparent;
+        border: none;
+        color: #94a3b8;
+        font-size: 26px;
+        line-height: 1;
+        cursor: pointer;
+        padding: 2px 8px;
+        border-radius: 4px;
+        transition: all 0.2s;
+      }
+      .ct-modal-close:hover {
+        color: #ff3b30;
+        background: rgba(255, 59, 48, 0.15);
+      }
+      .ct-modal-body {
+        padding: 18px 22px;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+      .ct-modal-section {
+        background: #1e293b;
+        border-radius: 8px;
+        padding: 14px 16px;
+        border: 1px solid rgba(255,255,255,0.06);
+      }
+      .ct-modal-section h4 {
+        font-size: 12px;
+        letter-spacing: 0.05em;
+        color: #38bdf8;
+        margin-bottom: 12px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        text-transform: uppercase;
+      }
+      .ct-setting-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 10px;
+        gap: 12px;
+      }
+      .ct-setting-row:last-child {
+        margin-bottom: 0;
+      }
+      .ct-setting-row label {
+        font-size: 13px;
+        color: #cbd5e1;
+        flex: 1;
+      }
+      .ct-setting-inputs {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex: 1.2;
+        justify-content: flex-end;
+      }
+      .ct-setting-inputs input[type="range"] {
+        flex: 1;
+        accent-color: #00ffff;
+        cursor: pointer;
+      }
+      .ct-num-box {
+        width: 65px;
+        background: #0f172a;
+        border: 1px solid #334155;
+        border-radius: 4px;
+        color: #00ffff;
+        padding: 5px 8px;
+        font-size: 13px;
+        text-align: center;
+        font-weight: 600;
+      }
+      .ct-select-box {
+        background: #0f172a;
+        border: 1px solid #334155;
+        border-radius: 4px;
+        color: #e2e8f0;
+        padding: 6px 10px;
+        font-size: 13px;
+        flex: 1.2;
+      }
+      .ct-textarea-box {
+        width: 100%;
+        box-sizing: border-box;
+        background: #0f172a;
+        border: 1px solid #334155;
+        border-radius: 4px;
+        color: #e2e8f0;
+        padding: 8px 10px;
+        font-family: monospace;
+        font-size: 12px;
+        resize: vertical;
+      }
+      .ct-modal-footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 20px;
+        background: #0b1120;
+        border-top: 1px solid rgba(255,255,255,0.08);
+      }
+      .ct-btn-primary {
+        background: linear-gradient(135deg, #0284c7, #00ffff);
+        color: #0f172a;
+        font-weight: 700;
+        border: none;
+        border-radius: 6px;
+        padding: 8px 18px;
+        cursor: pointer;
+        font-size: 13px;
+        transition: opacity 0.2s, transform 0.1s;
+      }
+      .ct-btn-primary:hover {
+        opacity: 0.92;
+        transform: translateY(-1px);
+      }
+      .ct-btn-secondary {
+        background: rgba(255, 255, 255, 0.08);
+        color: #94a3b8;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        border-radius: 6px;
+        padding: 8px 14px;
+        cursor: pointer;
+        font-size: 13px;
+        transition: all 0.2s;
+      }
+      .ct-btn-secondary:hover {
+        background: rgba(255, 255, 255, 0.14);
+        color: #e2e8f0;
+      }
+</style></head><body><header id="ct-title-bar"><div class="ct-logo-container"><img src="/template/CK/Logo.png?v=new" alt="Pure Solver Logo"><h1>Pure<span class="typer-text"> Solver</span></h1><div class="ct-app-switch-container" style="display: none !important;"><button id="ct-app-switch-btn" class="ct-app-switch-btn" title="Switch to 2captcha"><span id="ct-app-switch-text">2captcha</span></button></div></div><div class="ct-center-container"><div class="ct-controls-container"><div class="ct-settings-group"><label for="ct-panel-count">Panels:</label> <input type="number" id="ct-panel-count" value="12" min="1" max="100"> <button id="ct-create-panels-btn">Set & Relaunch</button></div></div><div id="ct-expiration-container" class="ct-expiration-container" style="display: none !important;"><i class="fas fa-hourglass-half" style="display: none !important;"></i><div id="ct-time-left-display" class="ct-timer-display">Loading...</div></div><div class="ct-daily-task-container" style="display: none !important;"><i class="fas fa-video"></i><div class="ct-daily-progress"><span id="ct-daily-streak" class="ct-streak-count">0 days</span><div class="ct-progress-bar"><div id="ct-daily-progress-fill" class="ct-progress-fill" style="width: 0%"></div></div><button id="ct-upload-proof-btn" class="ct-upload-proof-btn" title="Guide & Upload Video Proof"><i class="fas fa-video"></i> Guide</button></div></div><div class="ct-balance-container" style="display: none !important;"><i class="fas fa-wallet"></i> <span id="ct-total-balance-display-usd">$0.00</span> <span class="ct-balance-separator" style="display: none !important;">|</span> <span id="ct-total-balance-display-idr" style="display: none !important;">Rp 0</span></div></div><div class="ct-window-actions-container"><button id="ct-scroll-up-btn" class="ct-control-btn" title="Scroll Up All Panels" style="display: none !important;"><i class="fas fa-chevron-up"></i></button> <button id="ct-scroll-down-btn" class="ct-control-btn" title="Scroll Down All Panels" style="display: none !important;"><i class="fas fa-chevron-down"></i></button> <button id="ct-settings-btn" class="ct-control-btn" title="Settings"><i class="fas fa-cog"></i></button></div></header>
+  <!-- Advanced Settings Modal Dialog -->
+  <div id="ct-settings-modal" class="ct-modal-overlay">
+    <div class="ct-modal-card">
+      <div class="ct-modal-header">
+        <div class="ct-modal-title"><i class="fas fa-sliders-h"></i> Advanced Display & Proxy Settings</div>
+        <button id="ct-modal-close-btn" class="ct-modal-close" title="Close Settings">&times;</button>
+      </div>
+      <div class="ct-modal-body">
+        <!-- Layout Section -->
+        <div class="ct-modal-section">
+          <h4><i class="fas fa-th"></i> Panel Layout & Dimensions</h4>
+          <div class="ct-setting-row">
+            <label for="modal-column-slider">Column Count (Panels / Row):</label>
+            <div class="ct-setting-inputs">
+              <input type="range" id="modal-column-slider" min="1" max="10" value="4">
+              <input type="number" id="modal-column-input" min="1" max="10" value="4" class="ct-num-box">
+            </div>
+          </div>
+          <div class="ct-setting-row">
+            <label for="modal-height-slider">Panel Height (px):</label>
+            <div class="ct-setting-inputs">
+              <input type="range" id="modal-height-slider" min="300" max="1200" step="10" value="520">
+              <input type="number" id="modal-height-input" min="300" max="1200" step="10" value="520" class="ct-num-box">
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="ct-modal-footer">
+        <button id="modal-reset-btn" class="ct-btn-secondary"><i class="fas fa-undo"></i> Reset Default</button>
+        <button id="modal-apply-btn" class="ct-btn-primary"><i class="fas fa-check"></i> Save & Apply</button>
+      </div>
+    </div>
+  </div>
+<div id="ct-panels-container" class="ct-main-content"><div id="panels-grid"></div></div><div id="ct-scrollbar-container"><div id="ct-scrollbar-thumb"></div></div><script>
+// Web Panels Renderer & Settings Configuration
+function getSavedConfig() {
+    try {
+        const raw = localStorage.getItem('CT_ADVANCED_SETTINGS');
+        return raw ? JSON.parse(raw) : null;
+    } catch(e) { return null; }
+}
+
+function renderWebPanels(count, customCols, customHeight) {
+    const grid = document.getElementById('panels-grid');
+    if (!grid) return;
+    const cfg = getSavedConfig() || {};
+    const panels = count || cfg.panels || 12;
+    const cols = customCols || cfg.columns || (panels <= 2 ? 2 : panels <= 6 ? 3 : 4);
+    const height = customHeight || cfg.height || 520;
+    
+    grid.innerHTML = '';
+    grid.style.gridTemplateColumns = 'repeat(' + cols + ', 1fr)';
+    
+    for (let i = 0; i < panels; i++) {
+        const iframe = document.createElement('iframe');
+        iframe.src = `panel.html?panelId=${i + 1}`;
+        iframe.className = 'panel-frame';
+        iframe.style.height = height + 'px';
+        iframe.allow = 'autoplay';
+        grid.appendChild(iframe);
+    }
+}
+
+function initSettingsModal() {
+    const modal = document.getElementById('ct-settings-modal');
+    const settingsBtn = document.getElementById('ct-settings-btn');
+    const closeBtn = document.getElementById('ct-modal-close-btn');
+    const applyBtn = document.getElementById('modal-apply-btn');
+    const resetBtn = document.getElementById('modal-reset-btn');
+
+    if (!modal || !settingsBtn) return;
+
+    const colSlider = document.getElementById('modal-column-slider');
+    const colInput = document.getElementById('modal-column-input');
+    const heightSlider = document.getElementById('modal-height-slider');
+    const heightInput = document.getElementById('modal-height-input');
+    const panelCountSlider = document.getElementById('modal-panel-count-slider');
+    const panelCountInput = document.getElementById('modal-panel-count-input');
+    const proxyMode = document.getElementById('modal-proxy-mode');
+    const manualProxyGroup = document.getElementById('modal-manual-proxy-group');
+    const manualProxies = document.getElementById('modal-manual-proxies');
+    const autoSolve = document.getElementById('modal-auto-solve');
+    const solverEngine = document.getElementById('modal-solver-engine');
+
+    function syncPair(slider, input) {
+        if (!slider || !input) return;
+        slider.addEventListener('input', () => { input.value = slider.value; });
+        input.addEventListener('input', () => { 
+            let v = parseInt(input.value);
+            if (!isNaN(v)) slider.value = v;
+        });
+    }
+    syncPair(colSlider, colInput);
+    syncPair(heightSlider, heightInput);
+    syncPair(panelCountSlider, panelCountInput);
+
+    if (proxyMode && manualProxyGroup) {
+        proxyMode.addEventListener('change', () => {
+            manualProxyGroup.style.display = proxyMode.value === 'manual' ? 'block' : 'none';
+        });
+    }
+
+    function populateModalFields() {
+        const cfg = getSavedConfig() || {};
+        const currentPanels = parseInt(document.getElementById('ct-panel-count')?.value) || 12;
+        if (colSlider) colSlider.value = cfg.columns || 4;
+        if (colInput) colInput.value = cfg.columns || 4;
+        if (heightSlider) heightSlider.value = cfg.height || 520;
+        if (heightInput) heightInput.value = cfg.height || 520;
+        if (panelCountSlider) panelCountSlider.value = cfg.panels || currentPanels;
+        if (panelCountInput) panelCountInput.value = cfg.panels || currentPanels;
+        if (proxyMode) proxyMode.value = cfg.proxyMode || 'none';
+        if (manualProxies) manualProxies.value = cfg.manualProxies || '';
+        if (autoSolve) autoSolve.value = cfg.autoSolve || 'recaptcha_v2_local';
+        if (solverEngine) solverEngine.value = cfg.solverEngine || 'captchasonic';
+        if (manualProxyGroup) manualProxyGroup.style.display = (cfg.proxyMode === 'manual') ? 'block' : 'none';
+    }
+
+    settingsBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        populateModalFields();
+        modal.style.display = 'flex';
+    });
+
+    if (closeBtn) {
+        closeBtn.addEventListener('click', () => {
+            modal.style.display = 'none';
+        });
+    }
+
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) modal.style.display = 'none';
+    });
+
+    if (applyBtn) {
+        applyBtn.addEventListener('click', () => {
+            const columns = parseInt(colInput.value) || 4;
+            const height = parseInt(heightInput.value) || 520;
+            const panels = (panelCountInput ? parseInt(panelCountInput.value) : parseInt(document.getElementById('ct-panel-count')?.value)) || 12;
+            const cfg = {
+                columns: columns,
+                height: height,
+                panels: panels,
+                proxyMode: proxyMode ? proxyMode.value : 'none',
+                manualProxies: manualProxies ? manualProxies.value : '',
+                autoSolve: autoSolve ? autoSolve.value : 'recaptcha_v2_local',
+                solverEngine: solverEngine ? solverEngine.value : 'captchasonic'
+            };
+            localStorage.setItem('CT_ADVANCED_SETTINGS', JSON.stringify(cfg));
+            
+            // Update top bar panel count input
+            const headerCount = document.getElementById('ct-panel-count');
+            if (headerCount) headerCount.value = panels;
+
+            // Re-render live
+            renderWebPanels(panels, columns, height);
+
+            applyBtn.textContent = 'Saved!';
+            setTimeout(() => {
+                applyBtn.innerHTML = '<i class="fas fa-check"></i> Save & Apply';
+                modal.style.display = 'none';
+            }, 400);
+        });
+    }
+
+    if (resetBtn) {
+        resetBtn.addEventListener('click', () => {
+            if (colSlider) { colSlider.value = 4; colInput.value = 4; }
+            if (heightSlider) { heightSlider.value = 520; heightInput.value = 520; }
+            if (panelCountSlider) { panelCountSlider.value = 12; panelCountInput.value = 12; }
+            if (proxyMode) proxyMode.value = 'none';
+            if (manualProxies) manualProxies.value = '';
+            if (autoSolve) autoSolve.value = 'recaptcha_v2_local';
+            if (solverEngine) solverEngine.value = 'captchasonic';
+            if (manualProxyGroup) manualProxyGroup.style.display = 'none';
+        });
+    }
+}
+
+// Initial Render
+try {
+    const saved = getSavedConfig();
+    const initPanels = saved && saved.panels ? saved.panels : 12;
+    const headerInput = document.getElementById('ct-panel-count');
+    if (headerInput && saved && saved.panels) headerInput.value = saved.panels;
+    renderWebPanels(initPanels);
+} catch(e) {
+    console.error('Initial panel render error:', e);
+}
+</script><script>// CT Header Controls and App Switch Functionality
+        document.addEventListener('DOMContentLoaded', async () => {
+            const { ipcRenderer } = require('electron');
+            const fs = require('fs');
+            const path = require('path');
+            
+            console.log('[CT Header] Initializing...');
+
+            // Initialize Settings Modal
+            initSettingsModal();
+
+            // Scroll controls
+            const ctScrollUpBtn = document.getElementById('ct-scroll-up-btn');
+            const ctScrollDownBtn = document.getElementById('ct-scroll-down-btn');
+            if (ctScrollUpBtn) {
+                ctScrollUpBtn.addEventListener('click', () => {
+                    const cont = document.getElementById('ct-panels-container');
+                    if (cont) cont.scrollTop -= 250;
+                });
+            }
+            if (ctScrollDownBtn) {
+                ctScrollDownBtn.addEventListener('click', () => {
+                    const cont = document.getElementById('ct-panels-container');
+                    if (cont) cont.scrollTop += 250;
+                });
+            }
+
+            // Panel count controls in top header
+            const ctCreatePanelsBtn = document.getElementById('ct-create-panels-btn');
+            const ctPanelCountInput = document.getElementById('ct-panel-count');
+            if (ctCreatePanelsBtn && ctPanelCountInput) {
+                ctCreatePanelsBtn.addEventListener('click', () => {
+                    const panels = parseInt(ctPanelCountInput.value) || 12;
+                    if (panels >= 1 && panels <= 100) {
+                        const cfg = getSavedConfig() || {};
+                        cfg.panels = panels;
+                        localStorage.setItem('CT_ADVANCED_SETTINGS', JSON.stringify(cfg));
+                        renderWebPanels(panels);
+                        ctCreatePanelsBtn.textContent = 'Loading...';
+                        ctCreatePanelsBtn.disabled = true;
+                        
+                        setTimeout(() => {
+                            ctCreatePanelsBtn.textContent = 'Set & Relaunch';
+                            ctCreatePanelsBtn.disabled = false;
+                        }, 500);
+                    } else {
+                        alert('Jumlah panel harus antara 1-100');
+                    }
+                });
+            }
+
+            // Initialize Timer and Daily Task System safely
+            try { initializeCTTimer(); } catch(e){ console.warn('[CT Timer]', e); }
+            try { initializeCTDailyTask(); } catch(e){ console.warn('[CT Daily Task]', e); }
+            try { initializeCTBalance(); } catch(e){ console.warn('[CT Balance]', e); }
+
+            // Listen for validation errors
+            ipcRenderer.on('ct-panel-validation-error', (event, data) => {
+                alert(data.message);
+                if (ctCreatePanelsBtn) {
+                    ctCreatePanelsBtn.textContent = 'Set & Relaunch';
+                    ctCreatePanelsBtn.disabled = false;
+                }
+            });
+
+            // Window Control Buttons
+            const ctMinimizeBtn = document.getElementById('ct-minimize-btn');
+            const ctMaximizeBtn = document.getElementById('ct-maximize-btn');
+            const ctCloseBtn = document.getElementById('ct-close-btn');
+            if (ctMinimizeBtn) {
+                ctMinimizeBtn.addEventListener('click', () => {
+                    const cont = document.getElementById('ct-panels-container');
+                    if (cont) cont.style.display = cont.style.display === 'none' ? 'block' : 'none';
+                });
+            }
+            if (ctMaximizeBtn) {
+                ctMaximizeBtn.addEventListener('click', () => {
+                    if (!document.fullscreenElement) {
+                        document.documentElement.requestFullscreen().catch(()=>{});
+                    } else {
+                        document.exitFullscreen().catch(()=>{});
+                    }
+                });
+            }
+            if (ctCloseBtn) {
+                ctCloseBtn.addEventListener('click', () => {
+                    if (confirm('Close Pure Solver?')) window.close();
+                });
+            }
+        });
+
+        function initializeCTTimer() {
+            console.log('[CT Timer] Initializing timer from Firebase...');
+            const { ipcRenderer } = require('electron');
+            
+            // Request expiration data from main process (same account)
+            ipcRenderer.send('get-expiration-data');
+            
+            // Listen for expiration updates
+            ipcRenderer.on('expiration-update', (event, data) => {
+                console.log('[CT Timer] Received expiration data:', data);
+                updateCTTimerDisplay(data);
+            });
+            
+            // Update timer every second
+            setInterval(() => {
+                const timerEl = document.getElementById('ct-time-left-display');
+                if (timerEl && timerEl.dataset.expirationDate) {
+                    const timeLeft = calculateTimeLeft(timerEl.dataset.expirationDate);
+                    timerEl.textContent = timeLeft;
+                }
+            }, 1000);
+        }
+
+        function updateCTTimerDisplay(data) {
+            const timerEl = document.getElementById('ct-time-left-display');
+            const container = document.getElementById('ct-expiration-container');
+            
+            if (!timerEl || !container) return;
+            
+            if (data && data.expirationDate) {
+                timerEl.dataset.expirationDate = data.expirationDate;
+                const timeLeft = calculateTimeLeft(data.expirationDate);
+                timerEl.textContent = timeLeft;
+                
+                // Check if expired or near expiration
+                const daysLeft = Math.ceil((new Date(data.expirationDate) - new Date()) / (1000 * 60 * 60 * 24));
+                
+                if (daysLeft <= 0) {
+                    container.style.border = '1px solid rgba(255, 59, 48, 0.5)';
+                    timerEl.style.color = '#ff3b30';
+                } else if (daysLeft <= 7) {
+                    container.style.border = '1px solid rgba(255, 204, 0, 0.5)';
+                    timerEl.style.color = '#ffcc00';
+                } else {
+                    container.style.border = '1px solid var(--border-color)';
+                    timerEl.style.color = 'var(--text-color)';
+                }
+            } else {
+                timerEl.textContent = '';
+            }
+        }
+
+        function calculateTimeLeft(expirationDate) {
+            const now = new Date();
+            const expiry = new Date(expirationDate);
+            const diffMs = expiry - now;
+            
+            if (diffMs <= 0) {
+                return 'Expired';
+            }
+            
+            const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+            const hours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+            
+            if (days > 0) {
+                return `${days}d ${hours}h`;
+            } else {
+                const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+                return `${hours}h ${minutes}m`;
+            }
+        }
+
+        // CT Daily Task System (uses same Firebase account)
+        function initializeCTDailyTask() {
+            console.log('[CT Daily Task] Initializing...');
+            const { ipcRenderer } = require('electron');
+            const fs = require('fs');
+            const path = require('path');
+            
+            const dailyDataPath = path.join(__dirname, '..', 'daily-task-data.json');
+            console.log('[CT Daily Task] Data path:', dailyDataPath);
+            
+            // Load daily task data
+            let dailyData = loadDailyData(dailyDataPath);
+            updateCTDailyTaskUI(dailyData);
+            
+            // Request sync from Firebase (same account)
+            ipcRenderer.send('sync-daily-task-from-firebase');
+            
+            // Listen for Firebase sync
+            ipcRenderer.on('daily-task-synced', (event, firebaseData) => {
+                console.log('[CT Daily Task] Synced from Firebase:', firebaseData);
+                if (firebaseData && firebaseData.dailyTaskData) {
+                    const mergedData = {
+                        ...dailyData,
+                        ...firebaseData.dailyTaskData,
+                        pendingVerification: dailyData.pendingVerification || []
+                    };
+                    fs.writeFileSync(dailyDataPath, JSON.stringify(mergedData, null, 2));
+                    dailyData = mergedData;
+                    updateCTDailyTaskUI(mergedData);
+                }
+            });
+            
+            // Auto-sync every 30 seconds
+            setInterval(() => {
+                ipcRenderer.send('sync-daily-task-from-firebase');
+            }, 30000);
+            
+            // Upload button - open guide
+            const uploadBtn = document.getElementById('ct-upload-proof-btn');
+            if (uploadBtn) {
+                uploadBtn.addEventListener('click', () => {
+                    console.log('[CT Daily Task] Opening guide...');
+                    ipcRenderer.send('open-daily-task-guide');
+                });
+            }
+            
+            // Listen for verification results
+            ipcRenderer.on('proof-verified', (event, data) => {
+                dailyData = loadDailyData(dailyDataPath);
+                if (data.approved) {
+                    const today = new Date().toDateString();
+                    dailyData.lastUploadDate = today;
+                    dailyData.currentStreak += 1;
+                    dailyData.totalDays += 1;
+                    
+                    if (dailyData.currentStreak >= 10) {
+                        dailyData.discountEligible = true;
+                    }
+                    
+                    fs.writeFileSync(dailyDataPath, JSON.stringify(dailyData, null, 2));
+                    updateCTDailyTaskUI(dailyData);
+                    
+                    new Notification('✅ Verifikasi Berhasil!', {
+                        body: `Upload video Anda telah diverifikasi! Streak: ${dailyData.currentStreak} hari`,
+                        icon: '../template/CK/Logo.png'
+                    });
+                }
+            });
+        }
+
+        function loadDailyData(filePath) {
+            const fs = require('fs');
+            try {
+                if (fs.existsSync(filePath)) {
+                    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+                } else {
+                    const initialData = {
+                        currentStreak: 0,
+                        totalDays: 0,
+                        lastUploadDate: null,
+                        uploadHistory: [],
+                        pendingVerification: [],
+                        discountEligible: false
+                    };
+                    fs.writeFileSync(filePath, JSON.stringify(initialData, null, 2));
+                    return initialData;
+                }
+            } catch (error) {
+                console.error('[CT Daily Task] Error loading data:', error);
+                return { currentStreak: 0, totalDays: 0, lastUploadDate: null, uploadHistory: [], pendingVerification: [], discountEligible: false };
+            }
+        }
+
+        function updateCTDailyTaskUI(dailyData) {
+            const streakEl = document.getElementById('ct-daily-streak');
+            const progressFill = document.getElementById('ct-daily-progress-fill');
+            const uploadBtn = document.getElementById('ct-upload-proof-btn');
+            
+            if (streakEl) {
+                streakEl.textContent = `${dailyData.currentStreak} hari`;
+            }
+            
+            const progressPercent = Math.min((dailyData.currentStreak / 30) * 100, 100);
+            if (progressFill) {
+                progressFill.style.width = `${progressPercent}%`;
+            }
+            
+            const today = new Date().toDateString();
+            const uploadedToday = dailyData.lastUploadDate === today;
+            
+            if (uploadBtn && uploadedToday) {
+                uploadBtn.classList.add('completed');
+                uploadBtn.innerHTML = '<i class="fas fa-check"></i> Sudah Upload';
+            }
+        }
+
+        // CT Balance Display (dummy for now)
+        function initializeCTBalance() {
+            console.log('[CT Balance] Initializing balance display (dummy)...');
+            const { ipcRenderer } = require('electron');
+            
+            // Listen for balance updates from main app
+            ipcRenderer.on('balance-update', (event, data) => {
+                console.log('[CT Balance] Received balance update:', data);
+                updateCTBalanceDisplay(data);
+            });
+            
+            // Request initial balance data
+            ipcRenderer.send('get-balance-data');
+        }
+
+        function updateCTBalanceDisplay(data) {
+            const usdEl = document.getElementById('ct-total-balance-display-usd');
+            const idrEl = document.getElementById('ct-total-balance-display-idr');
+            
+            if (usdEl && data.usd !== undefined) {
+                usdEl.textContent = `$${parseFloat(data.usd).toFixed(2)}`;
+            }
+            
+            if (idrEl && data.idr !== undefined) {
+                idrEl.textContent = `Rp ${parseInt(data.idr).toLocaleString('id-ID')}`;
+            }
+        }
+
+        // Custom scrollbar dragging & update logic
+        (function() {
+            const scrollbarContainer = document.getElementById('ct-scrollbar-container');
+            const scrollbarThumb = document.getElementById('ct-scrollbar-thumb');
+            if (!scrollbarContainer || !scrollbarThumb) return;
+            
+            let isDraggingScrollbar = false;
+            let startDragY = 0;
+            let startThumbTop = 0;
+            let currentScrollY = 0;
+            let maxScrollY = 0;
+
+            function updateScrollbarThumb(scrollY, maximumScrollY) {
+                currentScrollY = scrollY;
+                maxScrollY = maximumScrollY;
+                
+                if (maxScrollY <= 0) {
+                    scrollbarContainer.style.display = 'none';
+                    return;
+                }
+                scrollbarContainer.style.display = 'block';
+
+                const containerHeight = scrollbarContainer.clientHeight;
+                const thumbHeight = Math.max(30, Math.round((containerHeight / (containerHeight + maxScrollY)) * containerHeight));
+                scrollbarThumb.style.height = `${thumbHeight}px`;
+
+                const maxThumbTop = containerHeight - thumbHeight;
+                const percent = scrollY / maxScrollY;
+                const thumbTop = percent * maxThumbTop;
+                scrollbarThumb.style.top = `${Math.min(maxThumbTop, Math.max(0, thumbTop))}px`;
+            }
+
+            ipcRenderer.on('scroll-update', (event, data) => {
+                updateScrollbarThumb(data.scrollY, data.maxScrollY);
+            });
+
+            // Track window resize to re-check scrollbar
+            window.addEventListener('resize', () => {
+                ipcRenderer.invoke('get-scroll-state').then(state => {
+                    if (state) updateScrollbarThumb(state.scrollY, state.maxScrollY);
+                });
+            });
+
+            // Initial fetch of scroll state
+            setTimeout(() => {
+                ipcRenderer.invoke('get-scroll-state').then(state => {
+                    if (state) updateScrollbarThumb(state.scrollY, state.maxScrollY);
+                });
+            }, 500);
+
+            scrollbarThumb.addEventListener('mousedown', (e) => {
+                isDraggingScrollbar = true;
+                startDragY = e.clientY;
+                startThumbTop = parseInt(scrollbarThumb.style.top || '0');
+                scrollbarThumb.classList.add('active');
+                document.body.style.userSelect = 'none';
+                
+                e.preventDefault();
+                e.stopPropagation();
+            });
+
+            document.addEventListener('mousemove', (e) => {
+                if (!isDraggingScrollbar) return;
+                
+                const deltaY = e.clientY - startDragY;
+                const containerHeight = scrollbarContainer.clientHeight;
+                const thumbHeight = scrollbarThumb.clientHeight;
+                const maxThumbTop = containerHeight - thumbHeight;
+                
+                let newThumbTop = startThumbTop + deltaY;
+                newThumbTop = Math.min(maxThumbTop, Math.max(0, newThumbTop));
+                
+                const percent = maxThumbTop > 0 ? (newThumbTop / maxThumbTop) : 0;
+                const targetScrollY = percent * maxScrollY;
+                
+                ipcRenderer.send('set-scroll-y', targetScrollY);
+            });
+
+            document.addEventListener('mouseup', () => {
+                if (isDraggingScrollbar) {
+                    isDraggingScrollbar = false;
+                    scrollbarThumb.classList.remove('active');
+                    document.body.style.userSelect = '';
+                }
+            });
+
+            // Listen to wheel events on index.html to scroll panels
+            document.addEventListener('wheel', (e) => {
+                ipcRenderer.send('scroll-ct-panels', { deltaY: e.deltaY > 0 ? 150 : -150 });
+            }, { passive: true });
+        })();</script>
+<script>
+(function() {
+    // 1. Intercept document.createElement & document.createElementNS for 'webview'
+    const origCreateElement = document.createElement;
+    const origCreateElementNS = document.createElementNS;
+
+    function setupWebviewMethods(el) {
+        if (!el || el._webviewSetupDone) return el;
+        el._webviewSetupDone = true;
+
+        el.clearStorageData = function() { return Promise.resolve(); };
+        el.setProxy = function() { return Promise.resolve(); };
+        el.setCookies = function() { return Promise.resolve(); };
+        el.getCookies = function() { return Promise.resolve([]); };
+        el.setUserAgent = function() { return Promise.resolve(); };
+        el.reload = function() { 
+            try { 
+                if (el.contentWindow) el.contentWindow.location.reload(); 
+            } catch(e){} 
+        };
+        el.stop = function() { 
+            try { 
+                if (el.contentWindow) el.contentWindow.stop(); 
+            } catch(e){} 
+        };
+        el.send = function() {};
+        el.openDevTools = function() {};
+        el.closeDevTools = function() {};
+        el.isDevToolsOpened = function() { return false; };
+        el.canGoBack = function() { return false; };
+        el.canGoForward = function() { return false; };
+        el.getWebContents = function() { return { id: 1, isDestroyed: function() { return false; } }; };
+        el.setZoomFactor = function() { return Promise.resolve(); };
+        el.getZoomFactor = function(cb) { if (cb) cb(1.0); return Promise.resolve(1.0); };
+        el.executeJavaScript = function() { return Promise.resolve(); };
+
+        el.findInPage = function(text, options) {
+            try {
+                if (el.contentDocument && el.contentDocument.body) {
+                    var found = el.contentDocument.body.innerText.indexOf(text) !== -1;
+                    if (found) {
+                        setTimeout(function() {
+                            var evt = new Event('found-in-page');
+                            evt.result = { matches: 1, activeMatchOrdinal: 1 };
+                            el.dispatchEvent(evt);
+                        }, 50);
+                    }
+                }
+            } catch(e) {}
+            return 1;
+        };
+        el.stopFindInPage = function() {};
+
+        el.loadURL = function(url, options) {
+            var self = this;
+            var htmlContent = '';
+            var isDataUrl = false;
+            
+            if (typeof url === 'string' && url.indexOf('data:text/html,') === 0) {
+                htmlContent = decodeURIComponent(url.substring('data:text/html,'.length));
+                isDataUrl = true;
+            } else if (typeof url === 'string' && url.indexOf('data:text/html;base64,') === 0) {
+                try {
+                    htmlContent = atob(url.substring('data:text/html;base64,'.length));
+                    isDataUrl = true;
+                } catch(e) {
+                    console.error('[Webview Shim] Base64 decode error:', e);
+                }
+            }
+            
+            if (!isDataUrl) {
+                self.src = url;
+                setTimeout(function() {
+                    self.dispatchEvent(new Event('did-navigate'));
+                    self.dispatchEvent(new Event('did-finish-load'));
+                }, 50);
+                return Promise.resolve();
+            }
+
+            // Replace any {Domain} template placeholders with real domains
+            htmlContent = htmlContent.replace(/https:\/\/\{Domain\}\/recaptcha\//g, 'https://www.google.com/recaptcha/');
+            htmlContent = htmlContent.replace(/https:\/\/\{Domain\}\/1\//g, 'https://js.hcaptcha.com/1/');
+            htmlContent = htmlContent.replace(/https:\/\/\{Domain\}\/turnstile\//g, 'https://challenges.cloudflare.com/turnstile/');
+            htmlContent = htmlContent.replace(/\{Domain\}/g, 'www.google.com');
+
+            var frameId = 'frame_' + Math.random().toString(36).substring(2) + '_' + Date.now();
+            self.name = frameId;
+            self.setAttribute('name', frameId);
+            self.dataset.frameId = frameId;
+            self._currentFrameId = frameId;
+
+            // Inject the console-message forwarder directly into the captcha HTML
+            var forwarderScript = '<script>\n' +
+                'window.name = "' + frameId + '";\n' +
+                'window._CTOR_FRAME_ID = "' + frameId + '";\n' +
+                '(function() {\n' +
+                '    var _log = console.log;\n' +
+                '    console.log = function() {\n' +
+                '        _log.apply(console, arguments);\n' +
+                '        var str = Array.from(arguments).join(" ");\n' +
+                '        try { window.parent.postMessage({ type: "ctor-console-event", iframeId: "' + frameId + '", msg: str }, "*"); } catch(e){}\n' +
+                '    };\n' +
+                '    setTimeout(function() {\n' +
+                '        console.log("frame-onload");\n' +
+                '        console.log("frame loaded !");\n' +
+                '        console.log("detect-active");\n' +
+                '    }, 150);\n' +
+                '})();\n' +
+                '<\/script>';
+
+            if (htmlContent.indexOf('<head>') !== -1) {
+                htmlContent = htmlContent.replace('<head>', '<head>' + forwarderScript);
+            } else if (htmlContent.indexOf('<html>') !== -1) {
+                htmlContent = htmlContent.replace('<html>', '<html><head>' + forwarderScript + '</head>');
+            } else {
+                htmlContent = forwarderScript + htmlContent;
+            }
+
+            // Set srcdoc directly: instant rendering in browser without network hops or 404 proxy errors
+            self.srcdoc = htmlContent;
+
+            setTimeout(function() {
+                var loadedEvt = new Event('console-message');
+                loadedEvt.message = 'frame loaded !';
+                self.dispatchEvent(loadedEvt);
+
+                var loadedEvt2 = new Event('console-message');
+                loadedEvt2.message = 'frame-onload';
+                self.dispatchEvent(loadedEvt2);
+
+                var activeEvt = new Event('console-message');
+                activeEvt.message = 'detect-active';
+                self.dispatchEvent(activeEvt);
+
+                self.dispatchEvent(new Event('did-finish-load'));
+                self.dispatchEvent(new Event('did-navigate'));
+            }, 150);
+
+            return Promise.resolve();
+        };
+
+        el.addEventListener('load', function() {
+            triggerNavigateEvents(el);
+        });
+        setTimeout(function() {
+            triggerNavigateEvents(el);
+        }, 80);
+
+        return el;
+    }
+
+    function triggerNavigateEvents(el) {
+        setTimeout(function() {
+            try {
+                el.dispatchEvent(new Event('did-navigate'));
+                el.dispatchEvent(new Event('did-finish-load'));
+            } catch(e){}
+        }, 50);
+    }
+
+    document.createElement = function(tagName, options) {
+        var tag = (typeof tagName === 'string') ? tagName.toLowerCase() : '';
+        if (tag === 'webview') {
+            var iframe = origCreateElement.call(document, 'iframe', options);
+            iframe.setAttribute('data-is-webview', 'true');
+            iframe.setAttribute('class', 'ct-webview-frame');
+            iframe.style.width = '100%';
+            iframe.style.height = '100%';
+            iframe.style.minHeight = '480px';
+            iframe.style.border = 'none';
+            iframe.style.display = 'block';
+            iframe.style.backgroundColor = '#ffffff';
+            return setupWebviewMethods(iframe);
+        }
+        return origCreateElement.call(document, tagName, options);
+    };
+
+    document.createElementNS = function(ns, qualifiedName) {
+        if (typeof qualifiedName === 'string' && qualifiedName.toLowerCase() === 'webview') {
+            return document.createElement('webview');
+        }
+        return origCreateElementNS.call(document, ns, qualifiedName);
+    };
+
+    // Forward query selectors for 'webview' to also match the generated iframe
+    var origQuerySelectorAll = document.querySelectorAll;
+    document.querySelectorAll = function(selectors) {
+        if (typeof selectors === 'string' && selectors.indexOf('webview') !== -1) {
+            selectors = selectors.replace(/\bwebview\b/g, 'iframe[data-is-webview="true"], webview');
+        }
+        return origQuerySelectorAll.call(document, selectors);
+    };
+
+    var origQuerySelector = document.querySelector;
+    document.querySelector = function(selectors) {
+        if (typeof selectors === 'string' && selectors.indexOf('webview') !== -1) {
+            selectors = selectors.replace(/\bwebview\b/g, 'iframe[data-is-webview="true"], webview');
+        }
+        return origQuerySelector.call(document, selectors);
+    };
+
+    // Install webview methods onto HTMLIFrameElement and HTMLElement prototype
+    [HTMLIFrameElement.prototype, HTMLElement.prototype].forEach(function(proto) {
+        if (!proto) return;
+        proto.clearStorageData = function() { return Promise.resolve(); };
+        proto.setProxy = function() { return Promise.resolve(); };
+        proto.setCookies = function() { return Promise.resolve(); };
+        proto.getCookies = function() { return Promise.resolve([]); };
+        proto.setUserAgent = function() { return Promise.resolve(); };
+        proto.findInPage = function() { return 1; };
+        proto.stopFindInPage = function() {};
+        proto.getWebContents = function() { return { id: 1, isDestroyed: function() { return false; } }; };
+        proto.loadURL = function(url, options) {
+            setupWebviewMethods(this);
+            return this.loadURL(url, options);
+        };
+    });
+
+    // Intercept setAttribute('src', ...)
+    var origSetAttribute = Element.prototype.setAttribute;
+    Element.prototype.setAttribute = function(name, value) {
+        if (name === 'src') {
+            if (typeof value === 'string' && (value.indexOf('data:text/html,') === 0 || value.indexOf('data:text/html;base64,') === 0)) {
+                if (typeof this.loadURL === 'function') {
+                    this.loadURL(value, { baseURLForDataURL: 'https://worker.captchatypers.com/' });
+                    return;
+                }
+            }
+            origSetAttribute.call(this, name, value);
+            if (this.tagName === 'IFRAME' || this.getAttribute('data-is-webview') === 'true') {
+                triggerNavigateEvents(this);
+            }
+            return;
+        }
+        return origSetAttribute.call(this, name, value);
+    };
+
+    // Intercept HTMLIFrameElement.prototype.src
+    if (typeof HTMLIFrameElement !== 'undefined') {
+        var originalSrcDescriptor = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'src');
+        if (originalSrcDescriptor && originalSrcDescriptor.set) {
+            Object.defineProperty(HTMLIFrameElement.prototype, 'src', {
+                get: function() {
+                    return originalSrcDescriptor.get.call(this);
+                },
+                set: function(val) {
+                    if (typeof val === 'string' && (val.indexOf('data:text/html,') === 0 || val.indexOf('data:text/html;base64,') === 0)) {
+                        if (typeof this.loadURL === 'function') {
+                            this.loadURL(val, { baseURLForDataURL: 'https://worker.captchatypers.com/' });
+                            return;
+                        }
+                    }
+                    originalSrcDescriptor.set.call(this, val);
+                    triggerNavigateEvents(this);
+                }
+            });
+        }
+    }
+
+    // Message forwarder for captcha events and solutions with strict isolation
+    window.addEventListener('message', function(event) {
+        var msg = null;
+        var iframeId = null;
+
+        if (event.data && typeof event.data === 'object' && event.data.type === 'ctor-console-event') {
+            msg = event.data.msg;
+            iframeId = event.data.iframeId;
+        } else if (typeof event.data === 'string' && (event.data.indexOf('client_solution:') !== -1 || event.data.indexOf('token:') !== -1 || event.data.indexOf('frame-') !== -1 || event.data.indexOf('detect-') !== -1)) {
+            msg = event.data;
+        }
+
+        if (msg) {
+            if (msg === 'frame-load-error') return;
+
+            var allWebviews = Array.from(document.querySelectorAll('iframe[data-is-webview="true"], iframe.ct-webview-frame, webview'));
+            if (allWebviews.length === 0) {
+                allWebviews = Array.from(document.querySelectorAll('iframe'));
+            }
+
+            var targetWebview = null;
+
+            // Strategy 1: Match by frame ID / name
+            if (iframeId) {
+                targetWebview = allWebviews.find(function(el) {
+                    return el.name === iframeId ||
+                           (el.dataset && el.dataset.frameId === iframeId) ||
+                           el._currentFrameId === iframeId ||
+                           (el.src && el.src.indexOf('id=' + iframeId) !== -1);
+                });
+            }
+
+            // Strategy 2: Match by event.source window traversal
+            if (!targetWebview && event.source && event.source !== window) {
+                var curr = event.source;
+                try {
+                    while (curr && curr.parent && curr.parent !== window && curr.parent !== curr) {
+                        curr = curr.parent;
+                    }
+                } catch(e) {}
+
+                targetWebview = allWebviews.find(function(el) {
+                    try {
+                        return el.contentWindow === curr;
+                    } catch(e) {
+                        return false;
+                    }
+                });
+            }
+
+            // Strategy 3: Fallback ONLY if there is exactly 1 webview in total
+            if (!targetWebview && allWebviews.length === 1) {
+                targetWebview = allWebviews[0];
+            }
+
+            var isSolutionMsg = (typeof msg === 'string') && (msg.indexOf('token:') !== -1 || msg.indexOf('client_solution:') !== -1);
+
+            if (targetWebview) {
+                var evt = new Event('console-message');
+                evt.message = msg;
+                targetWebview.dispatchEvent(evt);
+            } else if (!isSolutionMsg) {
+                // Non-solution lifecycle pings (like frame-onload) can be sent to all if target unknown
+                allWebviews.forEach(function(target) {
+                    var evt = new Event('console-message');
+                    evt.message = msg;
+                    target.dispatchEvent(evt);
+                });
+            } else {
+                console.warn('[Message Forwarder] Dropped unrouted solution message to prevent cross-part solving:', msg);
+            }
+        }
+    });
+})();
+</script>
+</body></html>
