@@ -362,17 +362,25 @@ def render_captcha_frame():
         }}, 150);
     }})();
     </script>"""
+
+    # Inject the Chrome extension shim + reCAPTCHA solver so it works
+    # on Railway (no real Chrome extension installed) and locally.
+    ext_shim_tag = '<script src="/ext/js/ext_chrome_shim.js"></script>'
+    ext_solver_tag = '<script src="/ext/js/ext_recaptcha.js"></script>'
+    ext_inject = ext_shim_tag + ext_solver_tag
+
     if '<head>' in raw_html:
-        raw_html = raw_html.replace('<head>', '<head>' + console_forwarder)
+        raw_html = raw_html.replace('<head>', '<head>' + console_forwarder + ext_inject, 1)
     elif '<html>' in raw_html:
-        raw_html = raw_html.replace('<html>', '<html><head>' + console_forwarder + '</head>')
+        raw_html = raw_html.replace('<html>', '<html><head>' + console_forwarder + ext_inject + '</head>', 1)
     else:
-        raw_html = console_forwarder + raw_html
+        raw_html = console_forwarder + ext_inject + raw_html
 
     resp = Response(raw_html, status=200, content_type='text/html; charset=utf-8')
     resp.headers['Access-Control-Allow-Origin'] = '*'
     resp.headers.pop('X-Frame-Options', None)
     return resp
+
 
 @app.route('/proxy_captcha', methods=['GET', 'POST', 'OPTIONS'])
 def proxy_captcha():
