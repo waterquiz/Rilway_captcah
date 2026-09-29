@@ -3,6 +3,7 @@ import gzip
 import zlib
 import urllib.request
 import urllib.parse
+import urllib.error
 from flask import Flask, request, jsonify, Response, send_from_directory
 from flask_cors import CORS
 
@@ -174,17 +175,16 @@ def recaptcha_proxy(domain, endpoint):
     req_headers = {
         'User-Agent': request.headers.get('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'),
         'Referer': ref_domain,
-        'Origin': f"https://{domain}",
-        'Accept': request.headers.get('Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'),
         'Accept-Language': request.headers.get('Accept-Language', 'en-US,en;q=0.9'),
-        'Accept-Encoding': 'gzip, deflate',  # No 'br' - brotli may not be installed
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache',
-        'Sec-Fetch-Dest': 'iframe',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'cross-site',
-        'Upgrade-Insecure-Requests': '1',
     }
+    client_accept = request.headers.get('Accept')
+    if client_accept:
+        req_headers['Accept'] = client_accept
+    else:
+        req_headers['Accept'] = '*/*'
+
+    if request.method == 'POST' or request.headers.get('Origin'):
+        req_headers['Origin'] = f"https://{domain}"
 
     cache_key = f"{target_url}_{domain}"
     if request.method == 'GET' and cache_key in PROXY_CACHE:
@@ -199,6 +199,13 @@ def recaptcha_proxy(domain, endpoint):
 
     if request.method == 'POST':
         body = request.get_data()
+        if b'co=' in body:
+            try:
+                body_str = body.decode('utf-8', errors='ignore')
+                body_str = re.sub(r'co=[^&]+', f'co={co_val}', body_str)
+                body = body_str.encode('utf-8')
+            except Exception:
+                pass
         ct = request.headers.get('Content-Type')
         if ct:
             req_headers['Content-Type'] = ct
@@ -207,7 +214,7 @@ def recaptcha_proxy(domain, endpoint):
         req = urllib.request.Request(target_url, headers=req_headers)
 
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:
             content = resp.read()
             status_code = resp.status
             content_type = resp.headers.get('Content-Type', 'text/html')
@@ -318,9 +325,33 @@ def recaptcha_proxy(domain, endpoint):
             r.headers.pop('X-Frame-Options', None)
             r.headers.pop('Content-Security-Policy', None)
             return r
+    except urllib.error.HTTPError as e:
+        content = e.read()
+        status_code = e.code
+        content_type = e.headers.get('Content-Type', 'text/html')
+        content = decompress_response(content, e.headers)
+        r = Response(content, status=status_code, content_type=content_type)
+        r.headers['Access-Control-Allow-Origin'] = '*'
+        r.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+        r.headers['Access-Control-Allow-Headers'] = '*'
+        r.headers.pop('X-Frame-Options', None)
+        r.headers.pop('Content-Security-Policy', None)
+        return r
     except Exception as e:
         print(f"Proxy error for {target_url}: {e}")
-        return (f"Proxy error: {e}", 500)
+        return (f"Proxy error: {e}", 502)
+
+@app.route('/recaptcha/<path:endpoint>', methods=['GET', 'POST', 'OPTIONS'])
+def direct_recaptcha_fallback(endpoint):
+    """Catch any relative /recaptcha/... calls (e.g. /recaptcha/api2/jserrorlogging) and proxy them."""
+    if request.method == 'OPTIONS':
+        resp = Response()
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+        resp.headers['Access-Control-Allow-Headers'] = '*'
+        return resp
+    domain = 'worker.captchatypers.com'
+    return recaptcha_proxy(domain, endpoint)
 
 @app.route('/audio_proxy/<path:audio_url>', methods=['GET'])
 def audio_proxy(audio_url):
@@ -368,12 +399,7 @@ def gstatic_proxy(domain, endpoint):
         'User-Agent': request.headers.get('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'),
         'Referer': ref_domain,
         'Accept': request.headers.get('Accept', '*/*'),
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate',  # No 'br' - brotli may not be installed
-        'Cache-Control': 'no-cache',
-        'Sec-Fetch-Dest': 'script',
-        'Sec-Fetch-Mode': 'no-cors',
-        'Sec-Fetch-Site': 'cross-site',
+        'Accept-Language': request.headers.get('Accept-Language', 'en-US,en;q=0.9'),
     }
 
     cache_key = f"{target_url}_{domain}"
@@ -389,7 +415,7 @@ def gstatic_proxy(domain, endpoint):
 
     req = urllib.request.Request(target_url, headers=req_headers)
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:
             content = resp.read()
             status_code = resp.status
             content_type = resp.headers.get('Content-Type', 'text/html')
@@ -443,9 +469,27 @@ def gstatic_proxy(domain, endpoint):
             r.headers.pop('X-Frame-Options', None)
             r.headers.pop('Content-Security-Policy', None)
             return r
+    except urllib.error.HTTPError as e:
+        content = e.read()
+        status_code = e.code
+        content_type = e.headers.get('Content-Type', 'text/html')
+        content = decompress_response(content, e.headers)
+        r = Response(content, status=status_code, content_type=content_type)
+        r.headers['Access-Control-Allow-Origin'] = '*'
+        r.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+        r.headers['Access-Control-Allow-Headers'] = '*'
+        r.headers.pop('X-Frame-Options', None)
+        r.headers.pop('Content-Security-Policy', None)
+        return r
     except Exception as e:
         print(f"Gstatic proxy error for {target_url}: {e}")
-        return (f"Proxy error: {e}", 500)
+        return (f"Proxy error: {e}", 502)
+
+@app.route('/gstatic/<path:endpoint>', methods=['GET', 'OPTIONS'])
+def direct_gstatic_fallback(endpoint):
+    """Catch any relative /gstatic/... calls and proxy them."""
+    domain = 'worker.captchatypers.com'
+    return gstatic_proxy(domain, endpoint)
 
 @app.route('/render_captcha_frame', methods=['GET'])
 def render_captcha_frame():
