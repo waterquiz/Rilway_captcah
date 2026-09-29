@@ -1,8 +1,11 @@
 import os
+import gzip
+import zlib
 import urllib.request
 import urllib.parse
 from flask import Flask, request, jsonify, Response, send_from_directory
 from flask_cors import CORS
+
 
 app = Flask(__name__)
 CORS(app)
@@ -96,6 +99,31 @@ def get_co_for_domain(domain):
         origin_str = f"https://{domain}"
     return base64.b64encode(origin_str.encode('utf-8')).decode('utf-8').rstrip('=').replace('+', '-').replace('/', '_')
 
+def decompress_response(content, resp_headers):
+    """Decompress gzip/deflate/br compressed response bodies from Google."""
+    encoding = resp_headers.get('Content-Encoding', '').lower()
+    if not encoding or encoding == 'identity':
+        return content
+    try:
+        if encoding == 'gzip':
+            return gzip.decompress(content)
+        elif encoding == 'deflate':
+            # deflate can be raw deflate or zlib-wrapped
+            try:
+                return zlib.decompress(content)
+            except zlib.error:
+                return zlib.decompress(content, -zlib.MAX_WBITS)
+        elif encoding == 'br':
+            try:
+                import brotli
+                return brotli.decompress(content)
+            except (ImportError, Exception):
+                return content
+    except Exception as e:
+        print(f"[decompress] Warning: could not decompress {encoding}: {e}")
+    return content
+
+
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({"status": "healthy"}), 200
@@ -147,9 +175,9 @@ def recaptcha_proxy(domain, endpoint):
         'User-Agent': request.headers.get('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'),
         'Referer': ref_domain,
         'Origin': f"https://{domain}",
-        'Accept': request.headers.get('Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8'),
+        'Accept': request.headers.get('Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'),
         'Accept-Language': request.headers.get('Accept-Language', 'en-US,en;q=0.9'),
-        'Accept-Encoding': 'gzip, deflate, br',
+        'Accept-Encoding': 'gzip, deflate',  # No 'br' - brotli may not be installed
         'Cache-Control': 'no-cache',
         'Pragma': 'no-cache',
         'Sec-Fetch-Dest': 'iframe',
@@ -183,6 +211,8 @@ def recaptcha_proxy(domain, endpoint):
             content = resp.read()
             status_code = resp.status
             content_type = resp.headers.get('Content-Type', 'text/html')
+            # Decompress before any string manipulation
+            content = decompress_response(content, resp.headers)
             
             if 'javascript' in content_type or 'html' in content_type or 'json' in content_type:
                 content_text = content.decode('utf-8', errors='ignore')
@@ -339,7 +369,7 @@ def gstatic_proxy(domain, endpoint):
         'Referer': ref_domain,
         'Accept': request.headers.get('Accept', '*/*'),
         'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
+        'Accept-Encoding': 'gzip, deflate',  # No 'br' - brotli may not be installed
         'Cache-Control': 'no-cache',
         'Sec-Fetch-Dest': 'script',
         'Sec-Fetch-Mode': 'no-cors',
@@ -363,7 +393,9 @@ def gstatic_proxy(domain, endpoint):
             content = resp.read()
             status_code = resp.status
             content_type = resp.headers.get('Content-Type', 'text/html')
-            
+            # Decompress before any string manipulation
+            content = decompress_response(content, resp.headers)
+
             if 'javascript' in content_type or 'html' in content_type or 'css' in content_type:
                 content_text = content.decode('utf-8', errors='ignore')
                 content_text = re.sub(r'po\.integrity\s*=\s*[\'"][^\'"]*[\'"];?', '', content_text)
