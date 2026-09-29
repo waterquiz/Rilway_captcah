@@ -431,16 +431,66 @@ def render_captcha_frame():
         return ("No HTML provided", 400)
         
     domain_clean = ref_domain.replace('https://', '').replace('http://', '').strip('/')
-    
-    # Clean template placeholders and route through our recaptcha & gstatic proxies
-    raw_html = raw_html.replace('https://{Domain}/recaptcha/', f'/recaptcha_proxy/{domain_clean}/')
-    raw_html = raw_html.replace('https://www.google.com/recaptcha/', f'/recaptcha_proxy/{domain_clean}/')
-    raw_html = raw_html.replace('https://www.gstatic.com/recaptcha/', f'/gstatic_proxy/{domain_clean}/')
+
+    # -----------------------------------------------------------------------
+    # BROWSER-DIRECT MODE
+    # Instead of routing reCAPTCHA through Railway server (datacenter IP →
+    # Google blocks it), keep all Google / gstatic URLs direct so the USER'S
+    # browser (with their real home/office IP) talks to Google directly.
+    # The reCAPTCHA extension installed in the user's Chrome will then
+    # solve it using the user's real IP — no "Try again later" errors.
+    # -----------------------------------------------------------------------
+
+    # Replace CaptchaTypers placeholder domain with real Google
+    raw_html = raw_html.replace('https://{Domain}/recaptcha/', 'https://www.google.com/recaptcha/')
     raw_html = raw_html.replace('https://{Domain}/1/', 'https://js.hcaptcha.com/1/')
     raw_html = raw_html.replace('https://{Domain}/turnstile/', 'https://challenges.cloudflare.com/turnstile/')
     raw_html = raw_html.replace('{Domain}', 'www.google.com')
 
+    # Keep google.com and gstatic.com URLs as-is (user's browser loads them directly)
+    # DO NOT rewrite to /recaptcha_proxy/ or /gstatic_proxy/ — that routes through
+    # our Railway datacenter IP which Google blocks.
+
     safe_frame_id = (frame_id or '').replace('"', '\\"')
+
+    # Client-side co= parameter fixer: correct the origin encoded in 'co'
+    # so reCAPTCHA accepts the actual page origin.
+    co_fixer_js = f"""<script>
+// BROWSER-DIRECT MODE: fix reCAPTCHA co= param so it reflects
+// the real captchatypers domain, not Railway's origin.
+(function() {{
+  var _domain = "{domain_clean}";
+  // Override iframe src rewriting on load
+  function fixIframeSrc(iframe) {{
+    var src = iframe.src || '';
+    if (!src) return;
+    // If co= param is missing or wrong, fix it
+    if (src.indexOf('google.com/recaptcha') !== -1 && src.indexOf('co=') !== -1) {{
+      try {{
+        var url = new URL(src);
+        var correctCo = btoa('https://' + _domain + ':443').replace(/=/g,'').replace(/\\+/g,'-').replace(/\\//g,'_');
+        url.searchParams.set('co', correctCo);
+        iframe.src = url.toString();
+      }} catch(e) {{}}
+    }}
+  }}
+  // Observe DOM for iframes being added
+  try {{
+    var obs = new MutationObserver(function(mutations) {{
+      mutations.forEach(function(m) {{
+        m.addedNodes.forEach(function(n) {{
+          if (n.tagName === 'IFRAME') fixIframeSrc(n);
+          if (n.querySelectorAll) n.querySelectorAll('iframe').forEach(fixIframeSrc);
+        }});
+      }});
+    }});
+    obs.observe(document.documentElement, {{childList: true, subtree: true}});
+    // Fix any existing iframes too
+    document.querySelectorAll('iframe').forEach(fixIframeSrc);
+  }} catch(e) {{}}
+}})();
+</script>"""
+
     console_forwarder = f"""<script>
     window.name = "{safe_frame_id}";
     window._CTOR_FRAME_ID = "{safe_frame_id}";
@@ -457,6 +507,19 @@ def render_captcha_frame():
                 }}
             }} catch(e){{}}
         }};
+        // Forward postMessages from google.com reCAPTCHA frames to parent
+        window.addEventListener('message', function(evt) {{
+            try {{
+                if (!evt.data) return;
+                var msg = evt.data;
+                // Forward reCAPTCHA token messages upward
+                if (typeof msg === 'string' && (msg.indexOf('token') !== -1 || msg.indexOf('verifyCallback') !== -1)) {{
+                    if (window.parent && window.parent !== window) {{
+                        window.parent.postMessage({{ type: "ctor-console-event", iframeId: "{safe_frame_id}", msg: 'token:' + msg }}, "*");
+                    }}
+                }}
+            }} catch(e) {{}}
+        }});
         setTimeout(function() {{
             console.log("frame-onload");
             console.log("frame loaded !");
@@ -465,18 +528,19 @@ def render_captcha_frame():
     }})();
     </script>"""
 
-    # Inject the Chrome extension shim + reCAPTCHA solver so it works
-    # on Railway (no real Chrome extension installed) and locally.
+    # In browser-direct mode, the user's extension (installed in Chrome) runs
+    # natively on google.com/recaptcha/* frames - no need to inject ext_recaptcha.js.
+    # But we still inject ext_chrome_shim.js as a fallback for the outer container.
     ext_shim_tag = '<script src="/ext/js/ext_chrome_shim.js"></script>'
-    ext_solver_tag = '<script src="/ext/js/ext_recaptcha.js"></script>'
-    ext_inject = ext_shim_tag + ext_solver_tag
+
+    all_inject = co_fixer_js + console_forwarder + ext_shim_tag
 
     if '<head>' in raw_html:
-        raw_html = raw_html.replace('<head>', '<head>' + console_forwarder + ext_inject, 1)
+        raw_html = raw_html.replace('<head>', '<head>' + all_inject, 1)
     elif '<html>' in raw_html:
-        raw_html = raw_html.replace('<html>', '<html><head>' + console_forwarder + ext_inject + '</head>', 1)
+        raw_html = raw_html.replace('<html>', '<html><head>' + all_inject + '</head>', 1)
     else:
-        raw_html = console_forwarder + ext_inject + raw_html
+        raw_html = all_inject + raw_html
 
     resp = Response(raw_html, status=200, content_type='text/html; charset=utf-8')
     resp.headers['Access-Control-Allow-Origin'] = '*'
