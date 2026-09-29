@@ -14,6 +14,19 @@ CORS(app)
 CAPTCHA_FRAMES = {}
 PROXY_CACHE = {}
 
+# Setup Proxy if configured in Environment Variables (e.g. Railway HTTP_PROXY / HTTPS_PROXY)
+proxy_env = os.environ.get('HTTPS_PROXY') or os.environ.get('HTTP_PROXY') or os.environ.get('https_proxy') or os.environ.get('http_proxy')
+if proxy_env:
+    proxy_handler = urllib.request.ProxyHandler({
+        'http': proxy_env,
+        'https': proxy_env
+    })
+    opener = urllib.request.build_opener(proxy_handler)
+    urllib.request.install_opener(opener)
+    safe_proxy = proxy_env.split('@')[-1] if '@' in proxy_env else proxy_env
+    print(f"[Residential Proxy] Configured and active via: {safe_proxy}")
+
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 APP2_DIR = os.path.join(BASE_DIR, 'app2')
 TEMPLATE_DIR = os.path.join(BASE_DIR, 'template')
