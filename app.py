@@ -144,9 +144,18 @@ def recaptcha_proxy(domain, endpoint):
         target_url += f"?{qs}"
 
     req_headers = {
-        'User-Agent': request.headers.get('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'),
+        'User-Agent': request.headers.get('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'),
         'Referer': ref_domain,
-        'Origin': f"https://{domain}"
+        'Origin': f"https://{domain}",
+        'Accept': request.headers.get('Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8'),
+        'Accept-Language': request.headers.get('Accept-Language', 'en-US,en;q=0.9'),
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
+        'Sec-Fetch-Dest': 'iframe',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'cross-site',
+        'Upgrade-Insecure-Requests': '1',
     }
 
     cache_key = f"{target_url}_{domain}"
@@ -207,15 +216,65 @@ def recaptcha_proxy(domain, endpoint):
                     content_text = content_text.replace('N&&k&&C&&u.ports.length>B', 'N&&C&&u.ports.length>B')
                     content_text = content_text.replace('Z.R(N.origin)', 'true')
 
-                # In HTML pages (anchor, bframe), shim Window.prototype.postMessage so targetOrigin '*' is used safely
+                # In HTML pages (anchor, bframe), shim postMessage AND inject doscaptcha auto-audio-switch
                 if 'html' in content_type:
+                    # postMessage targetOrigin shim
                     pm_shim = '<script>(function(){try{var o=Window.prototype.postMessage;Window.prototype.postMessage=function(m,t,tr){if(typeof t==="object"&&t!==null){t.targetOrigin="*";return o.call(this,m,t);}return o.call(this,m,"*",tr);};}catch(e){}})();</script>'
+
+                    # Auto-switch to audio when "Try again later" / doscaptcha is detected in bframe
+                    dos_audio_switch = '''<script>
+(function() {
+  var _tried = false;
+  function switchToAudio() {
+    if (_tried) return;
+    var btn = document.querySelector('.rc-button-audio, button[id*="audio"], button[title*="audio"], #recaptcha-audio-button');
+    if (!btn) {
+      // Try by aria-label
+      var allBtns = document.querySelectorAll('button');
+      for (var i = 0; i < allBtns.length; i++) {
+        var label = (allBtns[i].getAttribute('aria-label') || '').toLowerCase();
+        if (label.indexOf('audio') !== -1 || label.indexOf('sound') !== -1) { btn = allBtns[i]; break; }
+      }
+    }
+    if (btn) {
+      _tried = true;
+      console.log('[DosAutoAudio] Switching to audio challenge...');
+      btn.click();
+    }
+  }
+  function checkDos() {
+    var header = document.querySelector('.rc-doscaptcha-header, .rc-doscaptcha-body');
+    if (header) {
+      console.log('[DosAutoAudio] Try-again-later detected, auto-switching to audio...');
+      setTimeout(switchToAudio, 800);
+      return;
+    }
+    var h3 = document.querySelectorAll('h3, .rc-doscaptcha-header-text');
+    for (var i = 0; i < h3.length; i++) {
+      var txt = (h3[i].innerText || h3[i].textContent || '').toLowerCase();
+      if (txt.indexOf('try again') !== -1) {
+        setTimeout(switchToAudio, 800);
+        return;
+      }
+    }
+  }
+  // Poll every second for the doscaptcha state
+  setInterval(checkDos, 1000);
+  // Also observe DOM mutations
+  try {
+    var obs = new MutationObserver(function() { checkDos(); });
+    obs.observe(document.body || document.documentElement, { childList: true, subtree: true });
+  } catch(e) {}
+})();
+</script>'''
+
+                    inject_scripts = pm_shim + dos_audio_switch
                     if '<head>' in content_text:
-                        content_text = content_text.replace('<head>', '<head>' + pm_shim, 1)
+                        content_text = content_text.replace('<head>', '<head>' + inject_scripts, 1)
                     elif '<html>' in content_text:
-                        content_text = content_text.replace('<html>', '<html><head>' + pm_shim + '</head>', 1)
+                        content_text = content_text.replace('<html>', '<html><head>' + inject_scripts + '</head>', 1)
                     else:
-                        content_text = pm_shim + content_text
+                        content_text = inject_scripts + content_text
 
                 content = content_text.encode('utf-8')
             
@@ -233,6 +292,33 @@ def recaptcha_proxy(domain, endpoint):
         print(f"Proxy error for {target_url}: {e}")
         return (f"Proxy error: {e}", 500)
 
+@app.route('/audio_proxy/<path:audio_url>', methods=['GET'])
+def audio_proxy(audio_url):
+    """Proxy reCAPTCHA audio challenge MP3 files through our server."""
+    try:
+        # audio_url is URL-encoded full path after /audio_proxy/
+        full_url = urllib.parse.unquote(audio_url)
+        if not full_url.startswith('http'):
+            full_url = 'https://' + full_url
+        req_headers = {
+            'User-Agent': request.headers.get('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'),
+            'Accept': 'audio/webm,audio/ogg,audio/wav,audio/*;q=0.9,application/ogg;q=0.7,video/*;q=0.6,*/*;q=0.5',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.google.com/',
+        }
+        req = urllib.request.Request(full_url, headers=req_headers)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            content = resp.read()
+            ct = resp.headers.get('Content-Type', 'audio/mpeg')
+            r = Response(content, status=200, content_type=ct)
+            r.headers['Access-Control-Allow-Origin'] = '*'
+            r.headers['Cache-Control'] = 'public, max-age=300'
+            return r
+    except Exception as e:
+        print(f"Audio proxy error: {e}")
+        return (f"Audio proxy error: {e}", 500)
+
+
 @app.route('/gstatic_proxy/<domain>/<path:endpoint>', methods=['GET', 'OPTIONS'])
 def gstatic_proxy(domain, endpoint):
     if request.method == 'OPTIONS':
@@ -249,8 +335,15 @@ def gstatic_proxy(domain, endpoint):
         target_url += f"?{qs}"
 
     req_headers = {
-        'User-Agent': request.headers.get('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'),
-        'Referer': ref_domain
+        'User-Agent': request.headers.get('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'),
+        'Referer': ref_domain,
+        'Accept': request.headers.get('Accept', '*/*'),
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Cache-Control': 'no-cache',
+        'Sec-Fetch-Dest': 'script',
+        'Sec-Fetch-Mode': 'no-cors',
+        'Sec-Fetch-Site': 'cross-site',
     }
 
     cache_key = f"{target_url}_{domain}"
@@ -297,6 +390,15 @@ def gstatic_proxy(domain, endpoint):
 
                     content_text = content_text.replace('N&&k&&C&&u.ports.length>B', 'N&&C&&u.ports.length>B')
                     content_text = content_text.replace('Z.R(N.origin)', 'true')
+
+                    # Rewrite audio challenge MP3 URLs through our audio proxy
+                    # reCAPTCHA audio src is like: https://www.google.com/recaptcha/api2/payload?...
+                    content_text = re.sub(
+                        r'(https://www\.google\.com/recaptcha/(?:api2|enterprise)/payload)',
+                        r'/audio_proxy/\1',
+                        content_text
+                    )
+
                 content = content_text.encode('utf-8')
             
             if request.method == 'GET' and ('javascript' in content_type or 'css' in content_type):
