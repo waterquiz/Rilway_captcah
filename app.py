@@ -115,7 +115,7 @@ def allocate_proxy_for_slot(slot, panel_id=None, part_id=None):
         slot = int(slot or 1)
     except (ValueError, TypeError):
         slot = 1
-    if slot < 1 or slot > 4:
+    if slot < 1:
         slot = 1
 
     if panel_id is None:
@@ -123,17 +123,20 @@ def allocate_proxy_for_slot(slot, panel_id=None, part_id=None):
     if part_id is None:
         part_id = ((slot - 1) % 2) + 1
 
+    if slot not in SLOT_CAPTCHA_COUNTERS:
+        SLOT_CAPTCHA_COUNTERS[slot] = 0
     SLOT_CAPTCHA_COUNTERS[slot] += 1
     captcha_idx = SLOT_CAPTCHA_COUNTERS[slot]
 
     if PROXY_MODE == 3:
         pool_len = len(PROXY_POOL)
         round_num = captcha_idx - 1
-        pool_idx = ((slot - 1) + (round_num * 4)) % pool_len
+        step = 10 if (slot > 4 or pool_len >= 20) else 4
+        pool_idx = ((slot - 1) + (round_num * step)) % pool_len
         proxy_num = pool_idx + 1
         proxy_url = PROXY_POOL[pool_idx]
         safe_p = format_safe_proxy(proxy_url)
-        is_loop = (round_num > 0) and (round_num * 4 % pool_len == 0)
+        is_loop = (round_num > 0) and ((round_num * step) % pool_len == 0)
         loop_tag = " [Pool Looped]" if is_loop else ""
         print(f"  [Panel {panel_id} Part {part_id} | Slot {slot}] Captcha #{captcha_idx} -> Rotating{loop_tag} to Proxy #{proxy_num}/{pool_len}: {safe_p}")
         return proxy_num, safe_p
@@ -183,13 +186,18 @@ def get_opener_for_slot(slot):
 # ---------------------------------------------------------------------------
 print("=" * 72)
 if PROXY_MODE == 3:
+    step = 10 if len(PROXY_POOL) >= 20 else 4
+    num_slots = 10 if step == 10 else 4
+    num_panels = num_slots // 2
     print(f"=== CAPTCHATYPERS PROXY SYSTEM: MODE 3 (ROTATING POOL - {len(PROXY_POOL)} PROXIES) ===")
     print("=" * 72)
-    print(f"Detected {len(PROXY_POOL)} Proxies in Pool. Staggered 4-Slot Rotation Pattern (Step +4):")
-    print("  - [Slot 1] Panel 1, Part 1 -> Proxy #1, Proxy #5, Proxy #9... (Loops back to 1)")
-    print("  - [Slot 2] Panel 1, Part 2 -> Proxy #2, Proxy #6, Proxy #10... (Loops back to 2)")
-    print("  - [Slot 3] Panel 2, Part 1 -> Proxy #3, Proxy #7, Proxy #11... (Loops back to 3)")
-    print("  - [Slot 4] Panel 2, Part 2 -> Proxy #4, Proxy #8, Proxy #12... (Loops back to 4)")
+    print(f"Detected {len(PROXY_POOL)} Proxies in Pool. Staggered {num_panels}-Panel ({num_slots}-Slot) Rotation Pattern (Step +{step}):")
+    for s in range(1, num_slots + 1):
+        p_num = ((s - 1) // 2) + 1
+        part_num = ((s - 1) % 2) + 1
+        seq = [((s - 1) + (r * step)) % len(PROXY_POOL) + 1 for r in range(min(4, max(2, len(PROXY_POOL) // step + 1)))]
+        seq_str = ", ".join(f"Proxy #{x}" for x in seq)
+        print(f"  - [Slot {s:02d}] Panel {p_num}, Part {part_num} -> {seq_str}... (Loops back to Proxy #{seq[0]})")
     print("Configured Proxies:")
     for idx, p in enumerate(PROXY_POOL, start=1):
         print(f"  Proxy #{idx:02d}: {format_safe_proxy(p)}")
