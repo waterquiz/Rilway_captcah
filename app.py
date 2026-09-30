@@ -372,6 +372,46 @@ def store_captcha_frame():
         })
     return jsonify({'error': 'Missing frame id'}), 400
 
+def execute_request_with_fallback(target_url, headers, data=None, method=None, proxy_num=1):
+    """
+    Attempts to fetch target_url using the assigned proxy_num.
+    If the proxy fails (e.g. 402 Payment Required, expired, timeout, connection reset),
+    it logs a clear alert and automatically falls back to direct connection.
+    Returns (content, status_code, content_type, resp_headers).
+    """
+    req_kwargs = {'data': data, 'headers': headers}
+    if method:
+        req_kwargs['method'] = method
+    req = urllib.request.Request(target_url, **req_kwargs)
+    opener = get_opener_for_proxy_num(proxy_num)
+    try:
+        with opener.open(req, timeout=12) as resp:
+            content = resp.read()
+            return content, resp.status, resp.headers.get('Content-Type', 'text/html'), resp.headers
+    except urllib.error.HTTPError as e:
+        if e.code in (402, 407, 502, 503, 504):
+            print(f"[Proxy #{proxy_num}] Proxy error {e.code} ({e.reason}) -> Falling back to Direct Connection...")
+        else:
+            return e.read(), e.code, e.headers.get('Content-Type', 'text/html'), e.headers
+    except Exception as e:
+        err_msg = str(e)
+        if '402' in err_msg:
+            print(f"[Proxy #{proxy_num}] [WARNING] Proxy returned 402 Payment Required (Bandwidth/Subscription Expired on proxy provider). Falling back to Direct Connection...")
+        else:
+            print(f"[Proxy #{proxy_num}] Proxy error ({e}) -> Falling back to Direct Connection...")
+
+    # Direct Fallback (bypass proxy envs)
+    try:
+        direct_req = urllib.request.Request(target_url, **req_kwargs)
+        direct_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with direct_opener.open(direct_req, timeout=15) as resp:
+            content = resp.read()
+            return content, resp.status, resp.headers.get('Content-Type', 'text/html'), resp.headers
+    except urllib.error.HTTPError as e:
+        return e.read(), e.code, e.headers.get('Content-Type', 'text/html'), e.headers
+    except Exception as e:
+        raise e
+
 @app.route('/recaptcha_proxy/<int:proxy_num>/<domain>/<path:endpoint>', methods=['GET', 'POST', 'OPTIONS'])
 @app.route('/recaptcha_proxy/<domain>/<path:endpoint>', methods=['GET', 'POST', 'OPTIONS'])
 def recaptcha_proxy(domain, endpoint, proxy_num=1):
@@ -426,6 +466,7 @@ def recaptcha_proxy(domain, endpoint, proxy_num=1):
         r.headers.pop('Content-Security-Policy', None)
         return r
 
+    body = None
     if request.method == 'POST':
         body = request.get_data()
         if b'co=' in body:
@@ -438,65 +479,45 @@ def recaptcha_proxy(domain, endpoint, proxy_num=1):
         ct = request.headers.get('Content-Type')
         if ct:
             req_headers['Content-Type'] = ct
-        req = urllib.request.Request(target_url, data=body, headers=req_headers, method='POST')
-    else:
-        req = urllib.request.Request(target_url, headers=req_headers)
 
-    opener = get_opener_for_proxy_num(proxy_num)
     try:
-        with opener.open(req, timeout=30) as resp:
-            content = resp.read()
-            status_code = resp.status
-            content_type = resp.headers.get('Content-Type', 'text/html')
-            # Decompress before any string manipulation
-            content = decompress_response(content, resp.headers)
-            
-            if 'javascript' in content_type or 'html' in content_type or 'json' in content_type:
-                content_text = content.decode('utf-8', errors='ignore')
-                # Remove SRI integrity check
-                content_text = re.sub(r'po\.integrity\s*=\s*[\'"][^\'"]*[\'"];?', '', content_text)
-                
-                # Rewrite Google endpoints preserving proxy_num
-                content_text = content_text.replace('https://www.google.com/recaptcha/', f'/recaptcha_proxy/{proxy_num}/{domain}/')
-                content_text = content_text.replace('https://www.gstatic.com/recaptcha/', f'/gstatic_proxy/{proxy_num}/{domain}/')
+        content, status_code, content_type, resp_headers = execute_request_with_fallback(
+            target_url, req_headers, data=body, method=request.method, proxy_num=proxy_num
+        )
+        content = decompress_response(content, resp_headers)
+        
+        if 'javascript' in content_type or 'html' in content_type or 'json' in content_type:
+            content_text = content.decode('utf-8', errors='ignore')
+            content_text = re.sub(r'po\.integrity\s*=\s*[\'"][^\'"]*[\'"];?', '', content_text)
+            content_text = content_text.replace('https://www.google.com/recaptcha/', f'/recaptcha_proxy/{proxy_num}/{domain}/')
+            content_text = content_text.replace('https://www.gstatic.com/recaptcha/', f'/gstatic_proxy/{proxy_num}/{domain}/')
 
-                # In JS scripts (recaptcha__en.js), ensure cross-window postMessage handshake uses targetOrigin '*'
-                if 'javascript' in content_type:
-                    # Timeout patches
-                    content_text = content_text.replace('k===void 0?5E3:k', 'k===void 0?60E3:k')
-                    content_text = content_text.replace('A=A===void 0?15E3:A', 'A=A===void 0?60E3:A')
-                    content_text = content_text.replace('N===void 0?15E3:N', 'N===void 0?60E3:N')
+            if 'javascript' in content_type:
+                content_text = content_text.replace('k===void 0?5E3:k', 'k===void 0?60E3:k')
+                content_text = content_text.replace('A=A===void 0?15E3:A', 'A=A===void 0?60E3:A')
+                content_text = content_text.replace('N===void 0?15E3:N', 'N===void 0?60E3:N')
 
-                    # Handshake targetOrigin '*' patch
-                    content_text = re.sub(
-                        r'([a-zA-Z0-9_$]+)=new MessageChannel,([a-zA-Z0-9_$]+)\.postMessage\(([a-zA-Z0-9_$]+),([\s\S]{1,80}?),\[\1\.port2\]\)',
-                        r'\1=new MessageChannel,\2.postMessage(\3,"*",[\1.port2])',
-                        content_text
-                    )
-                    content_text = re.sub(r'(\.postMessage\([^,]+,).*?(,\[\w+\.port2\]\))', r'\1"*"\2', content_text)
+                content_text = re.sub(
+                    r'([a-zA-Z0-9_$]+)=new MessageChannel,([a-zA-Z0-9_$]+)\.postMessage\(([a-zA-Z0-9_$]+),([\s\S]{1,80}?),\[\1\.port2\]\)',
+                    r'\1=new MessageChannel,\2.postMessage(\3,"*",[\1.port2])',
+                    content_text
+                )
+                content_text = re.sub(r'(\.postMessage\([^,]+,).*?(,\[\w+\.port2\]\))', r'\1"*"\2', content_text)
+                content_text = re.sub(r'([a-zA-Z0-9_$]+)\.v\(x\.origin\)', 'true', content_text)
+                content_text = re.sub(r'K\[35\]\(D\[2\],S,W\.origin\)==K\[35\]\(40,S,v\)', 'true', content_text)
+                content_text = re.sub(r'!k\|\|W\.source==k\[D\[0\]\]', 'true', content_text)
+                content_text = content_text.replace('N&&k&&C&&u.ports.length>B', 'N&&C&&u.ports.length>B')
+                content_text = content_text.replace('Z.R(N.origin)', 'true')
 
-                    # Handshake origin & window checks bypass
-                    content_text = re.sub(r'([a-zA-Z0-9_$]+)\.v\(x\.origin\)', 'true', content_text)
-                    content_text = re.sub(r'K\[35\]\(D\[2\],S,W\.origin\)==K\[35\]\(40,S,v\)', 'true', content_text)
-                    content_text = re.sub(r'!k\|\|W\.source==k\[D\[0\]\]', 'true', content_text)
-
-                    content_text = content_text.replace('N&&k&&C&&u.ports.length>B', 'N&&C&&u.ports.length>B')
-                    content_text = content_text.replace('Z.R(N.origin)', 'true')
-
-                # In HTML pages (anchor, bframe), shim postMessage AND inject doscaptcha auto-audio-switch
-                if 'html' in content_type:
-                    # postMessage targetOrigin shim
-                    pm_shim = '<script>(function(){try{var o=Window.prototype.postMessage;Window.prototype.postMessage=function(m,t,tr){if(typeof t==="object"&&t!==null){t.targetOrigin="*";return o.call(this,m,t);}return o.call(this,m,"*",tr);};}catch(e){}})();</script>'
-
-                    # Auto-switch to audio when "Try again later" / doscaptcha is detected in bframe
-                    dos_audio_switch = '''<script>
+            if 'html' in content_type:
+                pm_shim = '<script>(function(){try{var o=Window.prototype.postMessage;Window.prototype.postMessage=function(m,t,tr){if(typeof t==="object"&&t!==null){t.targetOrigin="*";return o.call(this,m,t);}return o.call(this,m,"*",tr);};}catch(e){}})();</script>'
+                dos_audio_switch = '''<script>
 (function() {
   var _tried = false;
   function switchToAudio() {
     if (_tried) return;
     var btn = document.querySelector('.rc-button-audio, button[id*="audio"], button[title*="audio"], #recaptcha-audio-button');
     if (!btn) {
-      // Try by aria-label
       var allBtns = document.querySelectorAll('button');
       for (var i = 0; i < allBtns.length; i++) {
         var label = (allBtns[i].getAttribute('aria-label') || '').toLowerCase();
@@ -525,41 +546,26 @@ def recaptcha_proxy(domain, endpoint, proxy_num=1):
       }
     }
   }
-  // Poll every second for the doscaptcha state
   setInterval(checkDos, 1000);
-  // Also observe DOM mutations
   try {
     var obs = new MutationObserver(function() { checkDos(); });
     obs.observe(document.body || document.documentElement, { childList: true, subtree: true });
   } catch(e) {}
 })();
 </script>'''
+                inject_scripts = pm_shim + dos_audio_switch
+                if '<head>' in content_text:
+                    content_text = content_text.replace('<head>', '<head>' + inject_scripts, 1)
+                elif '<html>' in content_text:
+                    content_text = content_text.replace('<html>', '<html><head>' + inject_scripts + '</head>', 1)
+                else:
+                    content_text = inject_scripts + content_text
 
-                    inject_scripts = pm_shim + dos_audio_switch
-                    if '<head>' in content_text:
-                        content_text = content_text.replace('<head>', '<head>' + inject_scripts, 1)
-                    elif '<html>' in content_text:
-                        content_text = content_text.replace('<html>', '<html><head>' + inject_scripts + '</head>', 1)
-                    else:
-                        content_text = inject_scripts + content_text
+            content = content_text.encode('utf-8')
+        
+        if request.method == 'GET' and ('javascript' in content_type or 'css' in content_type):
+            PROXY_CACHE[cache_key] = (content, content_type)
 
-                content = content_text.encode('utf-8')
-            
-            if request.method == 'GET' and ('javascript' in content_type or 'css' in content_type):
-                PROXY_CACHE[cache_key] = (content, content_type)
-
-            r = Response(content, status=status_code, content_type=content_type)
-            r.headers['Access-Control-Allow-Origin'] = '*'
-            r.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
-            r.headers['Access-Control-Allow-Headers'] = '*'
-            r.headers.pop('X-Frame-Options', None)
-            r.headers.pop('Content-Security-Policy', None)
-            return r
-    except urllib.error.HTTPError as e:
-        content = e.read()
-        status_code = e.code
-        content_type = e.headers.get('Content-Type', 'text/html')
-        content = decompress_response(content, e.headers)
         r = Response(content, status=status_code, content_type=content_type)
         r.headers['Access-Control-Allow-Origin'] = '*'
         r.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
@@ -568,12 +574,12 @@ def recaptcha_proxy(domain, endpoint, proxy_num=1):
         r.headers.pop('Content-Security-Policy', None)
         return r
     except Exception as e:
-        print(f"[Proxy #{proxy_num}] Proxy error for {target_url}: {e}")
+        print(f"[Proxy #{proxy_num}] Final error for {target_url}: {e}")
         return (f"Proxy error: {e}", 502)
 
 @app.route('/recaptcha/<path:endpoint>', methods=['GET', 'POST', 'OPTIONS'])
 def direct_recaptcha_fallback(endpoint):
-    """Catch any relative /recaptcha/... calls (e.g. /recaptcha/api2/jserrorlogging) and proxy them."""
+    """Catch any relative /recaptcha/... calls and proxy them."""
     if request.method == 'OPTIONS':
         resp = Response()
         resp.headers['Access-Control-Allow-Origin'] = '*'
@@ -602,19 +608,14 @@ def audio_proxy(audio_url, proxy_num=1):
             'Accept-Language': 'en-US,en;q=0.9',
             'Referer': 'https://www.google.com/',
         }
-        req = urllib.request.Request(full_url, headers=req_headers)
-        opener = get_opener_for_proxy_num(proxy_num)
-        with opener.open(req, timeout=30) as resp:
-            content = resp.read()
-            ct = resp.headers.get('Content-Type', 'audio/mpeg')
-            r = Response(content, status=200, content_type=ct)
-            r.headers['Access-Control-Allow-Origin'] = '*'
-            r.headers['Cache-Control'] = 'public, max-age=300'
-            return r
+        content, status_code, ct, _ = execute_request_with_fallback(full_url, req_headers, proxy_num=proxy_num)
+        r = Response(content, status=status_code, content_type=ct or 'audio/mpeg')
+        r.headers['Access-Control-Allow-Origin'] = '*'
+        r.headers['Cache-Control'] = 'public, max-age=300'
+        return r
     except Exception as e:
         print(f"[Proxy #{proxy_num}] Audio proxy error: {e}")
         return (f"Audio proxy error: {e}", 500)
-
 
 @app.route('/gstatic_proxy/<int:proxy_num>/<domain>/<path:endpoint>', methods=['GET', 'OPTIONS'])
 @app.route('/gstatic_proxy/<domain>/<path:endpoint>', methods=['GET', 'OPTIONS'])
@@ -655,67 +656,45 @@ def gstatic_proxy(domain, endpoint, proxy_num=1):
         r.headers.pop('Content-Security-Policy', None)
         return r
 
-    req = urllib.request.Request(target_url, headers=req_headers)
-    opener = get_opener_for_proxy_num(proxy_num)
     try:
-        with opener.open(req, timeout=30) as resp:
-            content = resp.read()
-            status_code = resp.status
-            content_type = resp.headers.get('Content-Type', 'text/html')
-            # Decompress before any string manipulation
-            content = decompress_response(content, resp.headers)
+        content, status_code, content_type, resp_headers = execute_request_with_fallback(
+            target_url, req_headers, proxy_num=proxy_num
+        )
+        content = decompress_response(content, resp_headers)
 
-            if 'javascript' in content_type or 'html' in content_type or 'css' in content_type:
-                content_text = content.decode('utf-8', errors='ignore')
-                content_text = re.sub(r'po\.integrity\s*=\s*[\'"][^\'"]*[\'"];?', '', content_text)
-                content_text = content_text.replace('https://www.google.com/recaptcha/', f'/recaptcha_proxy/{proxy_num}/{domain}/')
-                content_text = content_text.replace('https://www.gstatic.com/recaptcha/', f'/gstatic_proxy/{proxy_num}/{domain}/')
-                if 'javascript' in content_type:
-                    # Timeout patches
-                    content_text = content_text.replace('k===void 0?5E3:k', 'k===void 0?60E3:k')
-                    content_text = content_text.replace('A=A===void 0?15E3:A', 'A=A===void 0?60E3:A')
-                    content_text = content_text.replace('N===void 0?15E3:N', 'N===void 0?60E3:N')
+        if 'javascript' in content_type or 'html' in content_type or 'css' in content_type:
+            content_text = content.decode('utf-8', errors='ignore')
+            content_text = re.sub(r'po\.integrity\s*=\s*[\'"][^\'"]*[\'"];?', '', content_text)
+            content_text = content_text.replace('https://www.google.com/recaptcha/', f'/recaptcha_proxy/{proxy_num}/{domain}/')
+            content_text = content_text.replace('https://www.gstatic.com/recaptcha/', f'/gstatic_proxy/{proxy_num}/{domain}/')
+            if 'javascript' in content_type:
+                content_text = content_text.replace('k===void 0?5E3:k', 'k===void 0?60E3:k')
+                content_text = content_text.replace('A=A===void 0?15E3:A', 'A=A===void 0?60E3:A')
+                content_text = content_text.replace('N===void 0?15E3:N', 'N===void 0?60E3:N')
 
-                    # Handshake targetOrigin '*' patch
-                    content_text = re.sub(
-                        r'([a-zA-Z0-9_$]+)=new MessageChannel,([a-zA-Z0-9_$]+)\.postMessage\(([a-zA-Z0-9_$]+),([\s\S]{1,80}?),\[\1\.port2\]\)',
-                        r'\1=new MessageChannel,\2.postMessage(\3,"*",[\1.port2])',
-                        content_text
-                    )
-                    content_text = re.sub(r'(\.postMessage\([^,]+,).*?(,\[\w+\.port2\]\))', r'\1"*"\2', content_text)
+                content_text = re.sub(
+                    r'([a-zA-Z0-9_$]+)=new MessageChannel,([a-zA-Z0-9_$]+)\.postMessage\(([a-zA-Z0-9_$]+),([\s\S]{1,80}?),\[\1\.port2\]\)',
+                    r'\1=new MessageChannel,\2.postMessage(\3,"*",[\1.port2])',
+                    content_text
+                )
+                content_text = re.sub(r'(\.postMessage\([^,]+,).*?(,\[\w+\.port2\]\))', r'\1"*"\2', content_text)
+                content_text = re.sub(r'([a-zA-Z0-9_$]+)\.v\(x\.origin\)', 'true', content_text)
+                content_text = re.sub(r'K\[35\]\(D\[2\],S,W\.origin\)==K\[35\]\(40,S,v\)', 'true', content_text)
+                content_text = re.sub(r'!k\|\|W\.source==k\[D\[0\]\]', 'true', content_text)
+                content_text = content_text.replace('N&&k&&C&&u.ports.length>B', 'N&&C&&u.ports.length>B')
+                content_text = content_text.replace('Z.R(N.origin)', 'true')
 
-                    # Handshake origin & window checks bypass
-                    content_text = re.sub(r'([a-zA-Z0-9_$]+)\.v\(x\.origin\)', 'true', content_text)
-                    content_text = re.sub(r'K\[35\]\(D\[2\],S,W\.origin\)==K\[35\]\(40,S,v\)', 'true', content_text)
-                    content_text = re.sub(r'!k\|\|W\.source==k\[D\[0\]\]', 'true', content_text)
+                content_text = re.sub(
+                    r'(https://www\.google\.com/recaptcha/(?:api2|enterprise)/payload)',
+                    rf'/audio_proxy/{proxy_num}/\1',
+                    content_text
+                )
 
-                    content_text = content_text.replace('N&&k&&C&&u.ports.length>B', 'N&&C&&u.ports.length>B')
-                    content_text = content_text.replace('Z.R(N.origin)', 'true')
+            content = content_text.encode('utf-8')
+        
+        if request.method == 'GET' and ('javascript' in content_type or 'css' in content_type):
+            PROXY_CACHE[cache_key] = (content, content_type)
 
-                    # Rewrite audio challenge MP3 URLs through our audio proxy preserving proxy_num
-                    content_text = re.sub(
-                        r'(https://www\.google\.com/recaptcha/(?:api2|enterprise)/payload)',
-                        rf'/audio_proxy/{proxy_num}/\1',
-                        content_text
-                    )
-
-                content = content_text.encode('utf-8')
-            
-            if request.method == 'GET' and ('javascript' in content_type or 'css' in content_type):
-                PROXY_CACHE[cache_key] = (content, content_type)
-
-            r = Response(content, status=status_code, content_type=content_type)
-            r.headers['Access-Control-Allow-Origin'] = '*'
-            r.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
-            r.headers['Access-Control-Allow-Headers'] = '*'
-            r.headers.pop('X-Frame-Options', None)
-            r.headers.pop('Content-Security-Policy', None)
-            return r
-    except urllib.error.HTTPError as e:
-        content = e.read()
-        status_code = e.code
-        content_type = e.headers.get('Content-Type', 'text/html')
-        content = decompress_response(content, e.headers)
         r = Response(content, status=status_code, content_type=content_type)
         r.headers['Access-Control-Allow-Origin'] = '*'
         r.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
