@@ -513,40 +513,36 @@ def recaptcha_proxy(domain, endpoint, proxy_num=1):
                 pm_shim = '<script>(function(){try{var o=Window.prototype.postMessage;Window.prototype.postMessage=function(m,t,tr){if(typeof t==="object"&&t!==null){t.targetOrigin="*";return o.call(this,m,t);}return o.call(this,m,"*",tr);};}catch(e){}})();</script>'
                 dos_audio_switch = '''<script>
 (function() {
-  var _tried = false;
-  function switchToAudio() {
-    if (_tried) return;
-    var btn = document.querySelector('.rc-button-audio, button[id*="audio"], button[title*="audio"], #recaptcha-audio-button');
-    if (!btn) {
-      var allBtns = document.querySelectorAll('button');
-      for (var i = 0; i < allBtns.length; i++) {
-        var label = (allBtns[i].getAttribute('aria-label') || '').toLowerCase();
-        if (label.indexOf('audio') !== -1 || label.indexOf('sound') !== -1) { btn = allBtns[i]; break; }
+  var _notified = false;
+  function notifyDos() {
+    if (_notified) return;
+    _notified = true;
+    console.log('[DosAutoSkip] Try-again-later / doscaptcha detected, sending auto-skip message...');
+    try {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({ type: "ctor-captcha-dos", error: "try_again_later" }, "*");
       }
-    }
-    if (btn) {
-      _tried = true;
-      console.log('[DosAutoAudio] Switching to audio challenge...');
-      btn.click();
-    }
+      if (window.top && window.top !== window && window.top !== window.parent) {
+        window.top.postMessage({ type: "ctor-captcha-dos", error: "try_again_later" }, "*");
+      }
+    } catch(e) {}
   }
   function checkDos() {
-    var header = document.querySelector('.rc-doscaptcha-header, .rc-doscaptcha-body');
+    var header = document.querySelector('.rc-doscaptcha-header, .rc-doscaptcha-body, .rc-doscaptcha');
     if (header) {
-      console.log('[DosAutoAudio] Try-again-later detected, auto-switching to audio...');
-      setTimeout(switchToAudio, 800);
+      notifyDos();
       return;
     }
-    var h3 = document.querySelectorAll('h3, .rc-doscaptcha-header-text');
+    var h3 = document.querySelectorAll('h3, .rc-doscaptcha-header-text, .rc-doscaptcha-body-text, p');
     for (var i = 0; i < h3.length; i++) {
       var txt = (h3[i].innerText || h3[i].textContent || '').toLowerCase();
-      if (txt.indexOf('try again') !== -1) {
-        setTimeout(switchToAudio, 800);
+      if (txt.indexOf('try again later') !== -1 || txt.indexOf('automated queries') !== -1 || (txt.indexOf('try again') !== -1 && txt.indexOf('network') !== -1)) {
+        notifyDos();
         return;
       }
     }
   }
-  setInterval(checkDos, 1000);
+  setInterval(checkDos, 800);
   try {
     var obs = new MutationObserver(function() { checkDos(); });
     obs.observe(document.body || document.documentElement, { childList: true, subtree: true });
@@ -760,12 +756,19 @@ def render_captcha_frame():
     window.name = "{safe_frame_id}";
     window._CTOR_FRAME_ID = "{safe_frame_id}";
     (function() {{
+        window.addEventListener("message", function(e) {{
+            if (e && e.data && (e.data.type === "ctor-captcha-dos" || e.data.error === "try_again_later")) {{
+                if (window.parent && window.parent !== window) {{
+                    window.parent.postMessage({{ type: "ctor-captcha-dos", iframeId: "{safe_frame_id}", error: "try_again_later" }}, "*");
+                }}
+            }}
+        }});
         var _log = console.log;
         console.log = function() {{
             _log.apply(console, arguments);
             try {{
                 var str = Array.from(arguments).join(" ");
-                if (typeof str === 'string' && (str.indexOf('token:') !== -1 || str.indexOf('client_solution:') !== -1 || str.indexOf('frame loaded') !== -1 || str.indexOf('detect-active') !== -1 || str.indexOf('frame-onload') !== -1 || str.indexOf('captcha-load-error') !== -1)) {{
+                if (typeof str === 'string' && (str.indexOf('token:') !== -1 || str.indexOf('client_solution:') !== -1 || str.indexOf('frame loaded') !== -1 || str.indexOf('detect-active') !== -1 || str.indexOf('frame-onload') !== -1 || str.indexOf('captcha-load-error') !== -1 || str.indexOf('ctor-captcha-dos') !== -1 || str.indexOf('try_again_later') !== -1)) {{
                     if (str.indexOf('ctor-console-event') === -1 && window.parent && window.parent !== window) {{
                         window.parent.postMessage({{ type: "ctor-console-event", iframeId: "{safe_frame_id}", msg: str }}, "*");
                     }}

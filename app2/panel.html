@@ -428,6 +428,13 @@ try {
 
     // Message forwarder for captcha events and solutions with strict isolation
     window.addEventListener('message', function(event) {
+        if (event.data && typeof event.data === 'object' && (event.data.type === 'ctor-captcha-dos' || event.data.error === 'try_again_later')) {
+            if (typeof window._handleDosAutoSkip === 'function') {
+                window._handleDosAutoSkip(event.data.iframeId, event.source);
+            }
+            return;
+        }
+
         var msg = null;
         var iframeId = null;
 
@@ -436,6 +443,13 @@ try {
             iframeId = event.data.iframeId;
         } else if (typeof event.data === 'string' && (event.data.indexOf('client_solution:') !== -1 || event.data.indexOf('token:') !== -1 || event.data.indexOf('frame-') !== -1 || event.data.indexOf('detect-') !== -1)) {
             msg = event.data;
+        }
+
+        if (msg && (msg.indexOf('try_again_later') !== -1 || msg.indexOf('ctor-captcha-dos') !== -1)) {
+            if (typeof window._handleDosAutoSkip === 'function') {
+                window._handleDosAutoSkip(iframeId, event.source);
+            }
+            return;
         }
 
         if (msg) {
@@ -532,6 +546,210 @@ try {
                 t.remove()
             }
         }();</script>
+<script>
+// --- AUTO-CLICK YELLOW SKIP BUTTON ON "TRY AGAIN LATER" / DOS ERROR ---
+(function initDosAutoSkip() {
+    console.log('[CT Auto-Skip] Initialized "Try again later" yellow Skip button monitor.');
+
+    var lastSkipTimes = {}; // partId -> timestamp (cooldown)
+
+    function findSkipButtons() {
+        var allCandidateElements = Array.from(document.querySelectorAll(
+            'span[data-v-678938c8] button, button[data-v-678938c8], [data-v-678938c8] button, button.amber, button.lighten-2, button.v-btn.amber, .amber.lighten-2, button, .v-btn, [role="button"]'
+        ));
+
+        var skipButtons = [];
+        allCandidateElements.forEach(function(el) {
+            var txt = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+            var isAmber = el.classList && (el.classList.contains('amber') || el.classList.contains('lighten-2') || (typeof el.className === 'string' && el.className.indexOf('amber') !== -1));
+            var hasAttr = (el.hasAttribute && el.hasAttribute('data-v-678938c8')) || (el.parentElement && el.parentElement.hasAttribute && el.parentElement.hasAttribute('data-v-678938c8'));
+
+            if (txt === 'skip' || (isAmber && txt.indexOf('skip') !== -1) || (hasAttr && el.tagName === 'BUTTON' && isAmber)) {
+                var btn = el.closest('button') || el.closest('.v-btn') || el;
+                if (btn && skipButtons.indexOf(btn) === -1) {
+                    skipButtons.push(btn);
+                }
+            }
+        });
+
+        // Sort buttons by horizontal position (left to right)
+        skipButtons.sort(function(a, b) {
+            return a.getBoundingClientRect().left - b.getBoundingClientRect().left;
+        });
+
+        return skipButtons;
+    }
+
+    function findSkipButtonForPart(partId, webviewEl) {
+        // 1. Scoped search from webview element upwards
+        if (webviewEl) {
+            var curr = webviewEl.parentElement;
+            while (curr && curr !== document.body && curr !== document.documentElement) {
+                var candidateBtns = Array.from(curr.querySelectorAll('button.amber, button.lighten-2, button[class*="amber"], [data-v-678938c8] button, button'));
+                for (var i = 0; i < candidateBtns.length; i++) {
+                    var b = candidateBtns[i];
+                    var txt = (b.innerText || b.textContent || '').trim().toLowerCase();
+                    var isAmber = b.classList && (b.classList.contains('amber') || b.classList.contains('lighten-2'));
+                    if (txt === 'skip' || (isAmber && txt.indexOf('skip') !== -1)) {
+                        return b;
+                    }
+                }
+                curr = curr.parentElement;
+            }
+        }
+
+        // 2. Global candidate matching by closest horizontal coordinate (X-axis center)
+        var allSkips = findSkipButtons();
+        if (allSkips.length === 0) return null;
+        if (allSkips.length === 1) return allSkips[0];
+
+        if (webviewEl) {
+            var wvRect = webviewEl.getBoundingClientRect();
+            var wvCenter = wvRect.left + (wvRect.width / 2);
+            var bestBtn = null;
+            var minDist = Infinity;
+            for (var j = 0; j < allSkips.length; j++) {
+                var bRect = allSkips[j].getBoundingClientRect();
+                var bCenter = bRect.left + (bRect.width / 2);
+                var dist = Math.abs(bCenter - wvCenter);
+                if (dist < minDist) {
+                    minDist = dist;
+                    bestBtn = allSkips[j];
+                }
+            }
+            if (bestBtn) return bestBtn;
+        }
+
+        // 3. Fallback: match by partId index (part 1 -> 0, part 2 -> 1)
+        var idx = (partId && partId > 0) ? (partId - 1) : 0;
+        return allSkips[idx] || allSkips[0];
+    }
+
+    function triggerAutoSkip(webviewEl, partId) {
+        partId = parseInt(partId) || 1;
+        var now = Date.now();
+        if (lastSkipTimes[partId] && (now - lastSkipTimes[partId]) < 5000) {
+            return; // 5 seconds cooldown per part
+        }
+        lastSkipTimes[partId] = now;
+
+        var pId = window.CT_PANEL_ID || '1';
+        console.log('[CT Auto-Skip] ⚠️ "Try again later" detected on Panel ' + pId + ', Part ' + partId + '! Finding yellow Skip button...');
+
+        var skipBtn = findSkipButtonForPart(partId, webviewEl);
+        if (skipBtn) {
+            var btn = skipBtn.closest('button') || skipBtn.closest('.v-btn') || skipBtn;
+            try {
+                btn.removeAttribute('disabled');
+                btn.disabled = false;
+                btn.classList.remove('v-btn--disabled', 'disabled');
+                btn.removeAttribute('aria-disabled');
+                btn.style.pointerEvents = 'auto';
+            } catch(e) {}
+
+            var rect = btn.getBoundingClientRect();
+            var cx = rect.left + (rect.width > 0 ? rect.width / 2 : 10);
+            var cy = rect.top + (rect.height > 0 ? rect.height / 2 : 10);
+            var opts = { bubbles: true, cancelable: true, composed: true, view: window, clientX: cx, clientY: cy, button: 0 };
+            var targets = [btn, btn.parentElement, btn.querySelector('.v-btn__content')].filter(Boolean);
+
+            for (var t = 0; t < targets.length; t++) {
+                var el = targets[t];
+                ['mouseover', 'mouseenter', 'pointerover', 'pointerenter', 'mousedown', 'pointerdown'].forEach(function(evt) {
+                    try { el.dispatchEvent(new PointerEvent(evt, opts)); } catch(e) {}
+                    try { el.dispatchEvent(new MouseEvent(evt, opts)); } catch(e) {}
+                });
+                ['mouseup', 'pointerup', 'click'].forEach(function(evt) {
+                    try { el.dispatchEvent(new PointerEvent(evt, opts)); } catch(e) {}
+                    try { el.dispatchEvent(new MouseEvent(evt, opts)); } catch(e) {}
+                });
+                try { el.click(); } catch(e) {}
+            }
+            console.log('[CT Auto-Skip] ✅ Successfully clicked yellow Skip button for Panel ' + pId + ', Part ' + partId + '!');
+        } else {
+            console.warn('[CT Auto-Skip] ❌ Yellow Skip button not found for Part ' + partId);
+        }
+    }
+
+    window._handleDosAutoSkip = function(iframeId, eventSource) {
+        var allWebviews = Array.from(document.querySelectorAll('iframe[data-is-webview="true"], iframe.ct-webview-frame, webview'));
+        if (allWebviews.length === 0) allWebviews = Array.from(document.querySelectorAll('iframe'));
+
+        var targetWv = null;
+        if (iframeId) {
+            targetWv = allWebviews.find(function(el) {
+                return el.name === iframeId ||
+                       (el.dataset && el.dataset.frameId === iframeId) ||
+                       el._currentFrameId === iframeId ||
+                       (el.src && el.src.indexOf('id=' + iframeId) !== -1);
+            });
+        }
+        if (!targetWv && eventSource && eventSource !== window) {
+            var curr = eventSource;
+            try {
+                while (curr && curr.parent && curr.parent !== window && curr.parent !== curr) {
+                    curr = curr.parent;
+                }
+            } catch(e) {}
+            targetWv = allWebviews.find(function(el) {
+                try { return el.contentWindow === curr; } catch(e) { return false; }
+            });
+        }
+
+        var partId = targetWv ? (targetWv.dataset.partId || 1) : 1;
+        triggerAutoSkip(targetWv, partId);
+    };
+
+    function checkDocForDos(doc) {
+        if (!doc) return false;
+        try {
+            if (doc.querySelector('.rc-doscaptcha, .rc-doscaptcha-header, .rc-doscaptcha-body, .rc-doscaptcha-footer')) {
+                return true;
+            }
+            var elList = doc.querySelectorAll('h3, .rc-doscaptcha-header-text, .rc-doscaptcha-body-text, p, div');
+            for (var i = 0; i < elList.length; i++) {
+                var txt = (elList[i].innerText || elList[i].textContent || '').toLowerCase();
+                if (txt.indexOf('try again later') !== -1 ||
+                    txt.indexOf('automated queries') !== -1 ||
+                    (txt.indexOf('try again') !== -1 && txt.indexOf('computer or network') !== -1)) {
+                    return true;
+                }
+            }
+        } catch(e) {}
+        return false;
+    }
+
+    // Background interval check inspecting webview contents every 700ms
+    setInterval(function scanWebviewsForDos() {
+        var allWebviews = Array.from(document.querySelectorAll('iframe[data-is-webview="true"], iframe.ct-webview-frame, webview'));
+        allWebviews.forEach(function(wv) {
+            try {
+                var doc = wv.contentDocument || (wv.contentWindow && wv.contentWindow.document);
+                if (!doc) return;
+
+                if (checkDocForDos(doc)) {
+                    var partId = wv.dataset.partId || 1;
+                    triggerAutoSkip(wv, partId);
+                    return;
+                }
+
+                // Check nested sub-iframes inside the webview (e.g. bframe, anchor)
+                var subFrames = Array.from(doc.querySelectorAll('iframe'));
+                for (var k = 0; k < subFrames.length; k++) {
+                    try {
+                        var subDoc = subFrames[k].contentDocument || (subFrames[k].contentWindow && subFrames[k].contentWindow.document);
+                        if (subDoc && checkDocForDos(subDoc)) {
+                            var pId = wv.dataset.partId || 1;
+                            triggerAutoSkip(wv, pId);
+                            return;
+                        }
+                    } catch(e) {}
+                }
+            } catch(err) {}
+        });
+    }, 700);
+})();
+</script>
 <script>
 // --- AUTO-CLICK START ICON ON TIMEOUT (10s Delay, Strictly Scoped Per Part) ---
 (function initPartTimeoutAutoRestart() {
