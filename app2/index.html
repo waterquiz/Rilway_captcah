@@ -14,7 +14,7 @@ window.ipcRenderer = window.ipcRenderer || {
     on: function(channel, listener) {},
     once: function(channel, listener) {},
     invoke: function(channel, data) {
-        if (channel === 'get-ct-config') return Promise.resolve({ panels: 12 });
+        if (channel === 'get-ct-config') return Promise.resolve({ panels: 2 });
         if (channel === 'get-scroll-state') return Promise.resolve({ scrollY: 0, maxScrollY: 0 });
         if (channel === 'is-window-maximized') return Promise.resolve(false);
         return Promise.resolve({});
@@ -605,7 +605,7 @@ globalThis.require = window.require;
         background: rgba(255, 255, 255, 0.14);
         color: #e2e8f0;
       }
-</style></head><body><header id="ct-title-bar"><div class="ct-logo-container"><img src="/template/CK/Logo.png?v=new" alt="Pure Solver Logo"><h1>Pure<span class="typer-text"> Solver</span></h1><div class="ct-app-switch-container" style="display: none !important;"><button id="ct-app-switch-btn" class="ct-app-switch-btn" title="Switch to 2captcha"><span id="ct-app-switch-text">2captcha</span></button></div></div><div class="ct-center-container"><div class="ct-controls-container"><div class="ct-settings-group"><label for="ct-panel-count">Panels:</label> <input type="number" id="ct-panel-count" value="12" min="1" max="100"> <button id="ct-create-panels-btn">Set & Relaunch</button></div></div><div id="ct-expiration-container" class="ct-expiration-container" style="display: none !important;"><i class="fas fa-hourglass-half" style="display: none !important;"></i><div id="ct-time-left-display" class="ct-timer-display">Loading...</div></div><div class="ct-daily-task-container" style="display: none !important;"><i class="fas fa-video"></i><div class="ct-daily-progress"><span id="ct-daily-streak" class="ct-streak-count">0 days</span><div class="ct-progress-bar"><div id="ct-daily-progress-fill" class="ct-progress-fill" style="width: 0%"></div></div><button id="ct-upload-proof-btn" class="ct-upload-proof-btn" title="Guide & Upload Video Proof"><i class="fas fa-video"></i> Guide</button></div></div><div class="ct-balance-container" style="display: none !important;"><i class="fas fa-wallet"></i> <span id="ct-total-balance-display-usd">$0.00</span> <span class="ct-balance-separator" style="display: none !important;">|</span> <span id="ct-total-balance-display-idr" style="display: none !important;">Rp 0</span></div></div><div class="ct-window-actions-container"><button id="ct-scroll-up-btn" class="ct-control-btn" title="Scroll Up All Panels" style="display: none !important;"><i class="fas fa-chevron-up"></i></button> <button id="ct-scroll-down-btn" class="ct-control-btn" title="Scroll Down All Panels" style="display: none !important;"><i class="fas fa-chevron-down"></i></button> <button id="ct-settings-btn" class="ct-control-btn" title="Settings"><i class="fas fa-cog"></i></button></div></header>
+</style></head><body><header id="ct-title-bar"><div class="ct-logo-container"><img src="/template/CK/Logo.png?v=new" alt="Pure Solver Logo"><h1>Pure<span class="typer-text"> Solver</span></h1><div class="ct-app-switch-container" style="display: none !important;"><button id="ct-app-switch-btn" class="ct-app-switch-btn" title="Switch to 2captcha"><span id="ct-app-switch-text">2captcha</span></button></div></div><div class="ct-center-container"><div class="ct-controls-container"><div class="ct-settings-group"><label for="ct-panel-count">Panels:</label> <input type="number" id="ct-panel-count" value="2" min="1" max="100"> <button id="ct-create-panels-btn">Set & Relaunch</button></div></div><div id="ct-expiration-container" class="ct-expiration-container" style="display: none !important;"><i class="fas fa-hourglass-half" style="display: none !important;"></i><div id="ct-time-left-display" class="ct-timer-display">Loading...</div></div><div class="ct-daily-task-container" style="display: none !important;"><i class="fas fa-video"></i><div class="ct-daily-progress"><span id="ct-daily-streak" class="ct-streak-count">0 days</span><div class="ct-progress-bar"><div id="ct-daily-progress-fill" class="ct-progress-fill" style="width: 0%"></div></div><button id="ct-upload-proof-btn" class="ct-upload-proof-btn" title="Guide & Upload Video Proof"><i class="fas fa-video"></i> Guide</button></div></div><div class="ct-balance-container" style="display: none !important;"><i class="fas fa-wallet"></i> <span id="ct-total-balance-display-usd">$0.00</span> <span class="ct-balance-separator" style="display: none !important;">|</span> <span id="ct-total-balance-display-idr" style="display: none !important;">Rp 0</span></div></div><div class="ct-window-actions-container"><button id="ct-scroll-up-btn" class="ct-control-btn" title="Scroll Up All Panels" style="display: none !important;"><i class="fas fa-chevron-up"></i></button> <button id="ct-scroll-down-btn" class="ct-control-btn" title="Scroll Down All Panels" style="display: none !important;"><i class="fas fa-chevron-down"></i></button> <button id="ct-settings-btn" class="ct-control-btn" title="Settings"><i class="fas fa-cog"></i></button></div></header>
   <!-- Advanced Settings Modal Dialog -->
   <div id="ct-settings-modal" class="ct-modal-overlay">
     <div class="ct-modal-card">
@@ -652,7 +652,7 @@ function renderWebPanels(count, customCols, customHeight) {
     const grid = document.getElementById('panels-grid');
     if (!grid) return;
     const cfg = getSavedConfig() || {};
-    const panels = count || cfg.panels || 12;
+    const panels = count || cfg.panels || 2;
     const cols = customCols || cfg.columns || (panels <= 2 ? 2 : panels <= 6 ? 3 : 4);
     const height = customHeight || cfg.height || 520;
     
@@ -710,9 +710,9 @@ function initSettingsModal() {
 
     function populateModalFields() {
         const cfg = getSavedConfig() || {};
-        const currentPanels = parseInt(document.getElementById('ct-panel-count')?.value) || 12;
-        if (colSlider) colSlider.value = cfg.columns || 4;
-        if (colInput) colInput.value = cfg.columns || 4;
+        const currentPanels = parseInt(document.getElementById('ct-panel-count')?.value) || 2;
+        if (colSlider) colSlider.value = cfg.columns || 2;
+        if (colInput) colInput.value = cfg.columns || 2;
         if (heightSlider) heightSlider.value = cfg.height || 520;
         if (heightInput) heightInput.value = cfg.height || 520;
         if (panelCountSlider) panelCountSlider.value = cfg.panels || currentPanels;
@@ -743,9 +743,9 @@ function initSettingsModal() {
 
     if (applyBtn) {
         applyBtn.addEventListener('click', () => {
-            const columns = parseInt(colInput.value) || 4;
+            const columns = parseInt(colInput.value) || 2;
             const height = parseInt(heightInput.value) || 520;
-            const panels = (panelCountInput ? parseInt(panelCountInput.value) : parseInt(document.getElementById('ct-panel-count')?.value)) || 12;
+            const panels = (panelCountInput ? parseInt(panelCountInput.value) : parseInt(document.getElementById('ct-panel-count')?.value)) || 2;
             const cfg = {
                 columns: columns,
                 height: height,
@@ -774,9 +774,9 @@ function initSettingsModal() {
 
     if (resetBtn) {
         resetBtn.addEventListener('click', () => {
-            if (colSlider) { colSlider.value = 4; colInput.value = 4; }
+            if (colSlider) { colSlider.value = 2; colInput.value = 2; }
             if (heightSlider) { heightSlider.value = 520; heightInput.value = 520; }
-            if (panelCountSlider) { panelCountSlider.value = 12; panelCountInput.value = 12; }
+            if (panelCountSlider) { panelCountSlider.value = 2; panelCountInput.value = 2; }
             if (proxyMode) proxyMode.value = 'none';
             if (manualProxies) manualProxies.value = '';
             if (autoSolve) autoSolve.value = 'recaptcha_v2_local';
@@ -789,9 +789,19 @@ function initSettingsModal() {
 // Initial Render
 try {
     const saved = getSavedConfig();
-    const initPanels = saved && saved.panels ? saved.panels : 12;
+    let initPanels = 2;
+    if (saved && saved.panels && saved.panels !== 12) {
+        initPanels = saved.panels;
+    } else {
+        initPanels = 2;
+        if (saved) {
+            saved.panels = 2;
+            saved.columns = 2;
+            localStorage.setItem('CT_ADVANCED_SETTINGS', JSON.stringify(saved));
+        }
+    }
     const headerInput = document.getElementById('ct-panel-count');
-    if (headerInput && saved && saved.panels) headerInput.value = saved.panels;
+    if (headerInput) headerInput.value = initPanels;
     renderWebPanels(initPanels);
 } catch(e) {
     console.error('Initial panel render error:', e);

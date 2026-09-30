@@ -14,17 +14,66 @@ CORS(app)
 CAPTCHA_FRAMES = {}
 PROXY_CACHE = {}
 
-# Setup Proxy if configured in Environment Variables (e.g. Railway HTTP_PROXY / HTTPS_PROXY)
-proxy_env = os.environ.get('HTTPS_PROXY') or os.environ.get('HTTP_PROXY') or os.environ.get('https_proxy') or os.environ.get('http_proxy')
-if proxy_env:
+# ---------------------------------------------------------------------------
+# Multi-Proxy Configuration for 4 Slots:
+# Slot 1: Panel 1, Part 1 -> PROXY_1 (or HTTP_PROXY_1)
+# Slot 2: Panel 1, Part 2 -> PROXY_2 (or HTTP_PROXY_2)
+# Slot 3: Panel 2, Part 1 -> PROXY_3 (or HTTP_PROXY_3)
+# Slot 4: Panel 2, Part 2 -> PROXY_4 (or HTTP_PROXY_4)
+# Fallback: HTTP_PROXY / HTTPS_PROXY
+# ---------------------------------------------------------------------------
+SLOT_OPENERS = {}
+
+def get_proxy_for_slot(slot):
+    try:
+        slot = int(slot or 1)
+    except (ValueError, TypeError):
+        slot = 1
+    # Check specific slot proxy: PROXY_1, PROXY_2, PROXY_3, PROXY_4
+    proxy = (
+        os.environ.get(f'PROXY_{slot}') or
+        os.environ.get(f'HTTP_PROXY_{slot}') or
+        os.environ.get(f'HTTPS_PROXY_{slot}') or
+        os.environ.get(f'proxy_{slot}')
+    )
+    if not proxy:
+        # Fallback to general proxy
+        proxy = (
+            os.environ.get('HTTPS_PROXY') or
+            os.environ.get('HTTP_PROXY') or
+            os.environ.get('https_proxy') or
+            os.environ.get('http_proxy')
+        )
+    return proxy.strip() if proxy else None
+
+def get_opener_for_slot(slot):
+    proxy_url = get_proxy_for_slot(slot)
+    if not proxy_url:
+        return urllib.request.build_opener()
+    
+    if proxy_url in SLOT_OPENERS:
+        return SLOT_OPENERS[proxy_url]
+    
     proxy_handler = urllib.request.ProxyHandler({
-        'http': proxy_env,
-        'https': proxy_env
+        'http': proxy_url,
+        'https': proxy_url
     })
     opener = urllib.request.build_opener(proxy_handler)
-    urllib.request.install_opener(opener)
-    safe_proxy = proxy_env.split('@')[-1] if '@' in proxy_env else proxy_env
-    print(f"[Residential Proxy] Configured and active via: {safe_proxy}")
+    SLOT_OPENERS[proxy_url] = opener
+    return opener
+
+print("=" * 65)
+print("=== CAPTCHATYPERS MULTI-PROXY (4 SLOTS) INITIALIZED ===")
+for s in range(1, 5):
+    p = get_proxy_for_slot(s)
+    panel_num = ((s - 1) // 2) + 1
+    part_num = ((s - 1) % 2) + 1
+    if p:
+        safe_p = p.split('@')[-1] if '@' in p else p
+        print(f"  [Slot {s}] Panel {panel_num}, Part {part_num} -> Proxy: {safe_p}")
+    else:
+        print(f"  [Slot {s}] Panel {panel_num}, Part {part_num} -> Direct Connection (No PROXY_{s} set)")
+print("=" * 65)
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -152,24 +201,31 @@ def store_captcha_frame():
     frame_id = data.get('id')
     html = data.get('html', '')
     domain = data.get('domain', 'worker.captchatypers.com')
+    slot = int(data.get('slot', 1))
     domain_clean = domain.replace('https://', '').replace('http://', '').strip('/')
     if frame_id:
         if len(CAPTCHA_FRAMES) > 500:
             keys_to_delete = list(CAPTCHA_FRAMES.keys())[:-250]
             for k in keys_to_delete:
                 CAPTCHA_FRAMES.pop(k, None)
-        CAPTCHA_FRAMES[frame_id] = {'html': html, 'domain': domain_clean}
+        CAPTCHA_FRAMES[frame_id] = {'html': html, 'domain': domain_clean, 'slot': slot}
         return jsonify({'success': True})
     return jsonify({'error': 'Missing frame id'}), 400
 
+@app.route('/recaptcha_proxy/<int:slot>/<domain>/<path:endpoint>', methods=['GET', 'POST', 'OPTIONS'])
 @app.route('/recaptcha_proxy/<domain>/<path:endpoint>', methods=['GET', 'POST', 'OPTIONS'])
-def recaptcha_proxy(domain, endpoint):
+def recaptcha_proxy(domain, endpoint, slot=1):
     if request.method == 'OPTIONS':
         resp = Response()
         resp.headers['Access-Control-Allow-Origin'] = '*'
         resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
         resp.headers['Access-Control-Allow-Headers'] = '*'
         return resp
+
+    try:
+        slot = int(slot or 1)
+    except (ValueError, TypeError):
+        slot = 1
 
     ref_domain = f"https://{domain}/"
     co_val = get_co_for_domain(domain)
@@ -199,7 +255,7 @@ def recaptcha_proxy(domain, endpoint):
     if request.method == 'POST' or request.headers.get('Origin'):
         req_headers['Origin'] = f"https://{domain}"
 
-    cache_key = f"{target_url}_{domain}"
+    cache_key = f"{target_url}_{domain}_s{slot}"
     if request.method == 'GET' and cache_key in PROXY_CACHE:
         cached_content, cached_type = PROXY_CACHE[cache_key]
         r = Response(cached_content, status=200, content_type=cached_type)
@@ -226,8 +282,9 @@ def recaptcha_proxy(domain, endpoint):
     else:
         req = urllib.request.Request(target_url, headers=req_headers)
 
+    opener = get_opener_for_slot(slot)
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with opener.open(req, timeout=30) as resp:
             content = resp.read()
             status_code = resp.status
             content_type = resp.headers.get('Content-Type', 'text/html')
@@ -239,9 +296,9 @@ def recaptcha_proxy(domain, endpoint):
                 # Remove SRI integrity check
                 content_text = re.sub(r'po\.integrity\s*=\s*[\'"][^\'"]*[\'"];?', '', content_text)
                 
-                # Rewrite Google endpoints
-                content_text = content_text.replace('https://www.google.com/recaptcha/', f'/recaptcha_proxy/{domain}/')
-                content_text = content_text.replace('https://www.gstatic.com/recaptcha/', f'/gstatic_proxy/{domain}/')
+                # Rewrite Google endpoints preserving slot
+                content_text = content_text.replace('https://www.google.com/recaptcha/', f'/recaptcha_proxy/{slot}/{domain}/')
+                content_text = content_text.replace('https://www.gstatic.com/recaptcha/', f'/gstatic_proxy/{slot}/{domain}/')
 
                 # In JS scripts (recaptcha__en.js), ensure cross-window postMessage handshake uses targetOrigin '*'
                 if 'javascript' in content_type:
@@ -351,7 +408,7 @@ def recaptcha_proxy(domain, endpoint):
         r.headers.pop('Content-Security-Policy', None)
         return r
     except Exception as e:
-        print(f"Proxy error for {target_url}: {e}")
+        print(f"[Slot {slot}] Proxy error for {target_url}: {e}")
         return (f"Proxy error: {e}", 502)
 
 @app.route('/recaptcha/<path:endpoint>', methods=['GET', 'POST', 'OPTIONS'])
@@ -364,13 +421,18 @@ def direct_recaptcha_fallback(endpoint):
         resp.headers['Access-Control-Allow-Headers'] = '*'
         return resp
     domain = 'worker.captchatypers.com'
-    return recaptcha_proxy(domain, endpoint)
+    slot = request.args.get('slot', 1)
+    return recaptcha_proxy(domain, endpoint, slot=slot)
 
+@app.route('/audio_proxy/<int:slot>/<path:audio_url>', methods=['GET'])
 @app.route('/audio_proxy/<path:audio_url>', methods=['GET'])
-def audio_proxy(audio_url):
-    """Proxy reCAPTCHA audio challenge MP3 files through our server."""
+def audio_proxy(audio_url, slot=1):
+    """Proxy reCAPTCHA audio challenge MP3 files through our server using slot proxy."""
     try:
-        # audio_url is URL-encoded full path after /audio_proxy/
+        try:
+            slot = int(slot or 1)
+        except (ValueError, TypeError):
+            slot = 1
         full_url = urllib.parse.unquote(audio_url)
         if not full_url.startswith('http'):
             full_url = 'https://' + full_url
@@ -381,7 +443,8 @@ def audio_proxy(audio_url):
             'Referer': 'https://www.google.com/',
         }
         req = urllib.request.Request(full_url, headers=req_headers)
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        opener = get_opener_for_slot(slot)
+        with opener.open(req, timeout=30) as resp:
             content = resp.read()
             ct = resp.headers.get('Content-Type', 'audio/mpeg')
             r = Response(content, status=200, content_type=ct)
@@ -389,18 +452,24 @@ def audio_proxy(audio_url):
             r.headers['Cache-Control'] = 'public, max-age=300'
             return r
     except Exception as e:
-        print(f"Audio proxy error: {e}")
+        print(f"[Slot {slot}] Audio proxy error: {e}")
         return (f"Audio proxy error: {e}", 500)
 
 
+@app.route('/gstatic_proxy/<int:slot>/<domain>/<path:endpoint>', methods=['GET', 'OPTIONS'])
 @app.route('/gstatic_proxy/<domain>/<path:endpoint>', methods=['GET', 'OPTIONS'])
-def gstatic_proxy(domain, endpoint):
+def gstatic_proxy(domain, endpoint, slot=1):
     if request.method == 'OPTIONS':
         resp = Response()
         resp.headers['Access-Control-Allow-Origin'] = '*'
         resp.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
         resp.headers['Access-Control-Allow-Headers'] = '*'
         return resp
+
+    try:
+        slot = int(slot or 1)
+    except (ValueError, TypeError):
+        slot = 1
 
     ref_domain = f"https://{domain}/"
     qs = request.query_string.decode('utf-8', errors='ignore')
@@ -415,7 +484,7 @@ def gstatic_proxy(domain, endpoint):
         'Accept-Language': request.headers.get('Accept-Language', 'en-US,en;q=0.9'),
     }
 
-    cache_key = f"{target_url}_{domain}"
+    cache_key = f"{target_url}_{domain}_s{slot}"
     if request.method == 'GET' and cache_key in PROXY_CACHE:
         cached_content, cached_type = PROXY_CACHE[cache_key]
         r = Response(cached_content, status=200, content_type=cached_type)
@@ -427,8 +496,9 @@ def gstatic_proxy(domain, endpoint):
         return r
 
     req = urllib.request.Request(target_url, headers=req_headers)
+    opener = get_opener_for_slot(slot)
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with opener.open(req, timeout=30) as resp:
             content = resp.read()
             status_code = resp.status
             content_type = resp.headers.get('Content-Type', 'text/html')
@@ -438,8 +508,8 @@ def gstatic_proxy(domain, endpoint):
             if 'javascript' in content_type or 'html' in content_type or 'css' in content_type:
                 content_text = content.decode('utf-8', errors='ignore')
                 content_text = re.sub(r'po\.integrity\s*=\s*[\'"][^\'"]*[\'"];?', '', content_text)
-                content_text = content_text.replace('https://www.google.com/recaptcha/', f'/recaptcha_proxy/{domain}/')
-                content_text = content_text.replace('https://www.gstatic.com/recaptcha/', f'/gstatic_proxy/{domain}/')
+                content_text = content_text.replace('https://www.google.com/recaptcha/', f'/recaptcha_proxy/{slot}/{domain}/')
+                content_text = content_text.replace('https://www.gstatic.com/recaptcha/', f'/gstatic_proxy/{slot}/{domain}/')
                 if 'javascript' in content_type:
                     # Timeout patches
                     content_text = content_text.replace('k===void 0?5E3:k', 'k===void 0?60E3:k')
@@ -462,11 +532,10 @@ def gstatic_proxy(domain, endpoint):
                     content_text = content_text.replace('N&&k&&C&&u.ports.length>B', 'N&&C&&u.ports.length>B')
                     content_text = content_text.replace('Z.R(N.origin)', 'true')
 
-                    # Rewrite audio challenge MP3 URLs through our audio proxy
-                    # reCAPTCHA audio src is like: https://www.google.com/recaptcha/api2/payload?...
+                    # Rewrite audio challenge MP3 URLs through our audio proxy preserving slot
                     content_text = re.sub(
                         r'(https://www\.google\.com/recaptcha/(?:api2|enterprise)/payload)',
-                        r'/audio_proxy/\1',
+                        rf'/audio_proxy/{slot}/\1',
                         content_text
                     )
 
@@ -495,14 +564,15 @@ def gstatic_proxy(domain, endpoint):
         r.headers.pop('Content-Security-Policy', None)
         return r
     except Exception as e:
-        print(f"Gstatic proxy error for {target_url}: {e}")
+        print(f"[Slot {slot}] Gstatic proxy error for {target_url}: {e}")
         return (f"Proxy error: {e}", 502)
 
 @app.route('/gstatic/<path:endpoint>', methods=['GET', 'OPTIONS'])
 def direct_gstatic_fallback(endpoint):
     """Catch any relative /gstatic/... calls and proxy them."""
     domain = 'worker.captchatypers.com'
-    return gstatic_proxy(domain, endpoint)
+    slot = request.args.get('slot', 1)
+    return gstatic_proxy(domain, endpoint, slot=slot)
 
 @app.route('/render_captcha_frame', methods=['GET'])
 def render_captcha_frame():
@@ -512,9 +582,16 @@ def render_captcha_frame():
     if not frame_data:
         raw_html = request.args.get('html', '')
         ref_domain = request.args.get('domain', 'worker.captchatypers.com')
+        slot = request.args.get('slot', 1)
     else:
         raw_html = frame_data['html']
         ref_domain = frame_data['domain']
+        slot = frame_data.get('slot') or request.args.get('slot') or 1
+
+    try:
+        slot = int(slot)
+    except (ValueError, TypeError):
+        slot = 1
 
     if not raw_html:
         return ("No HTML provided", 400)
@@ -522,14 +599,11 @@ def render_captcha_frame():
     domain_clean = ref_domain.replace('https://', '').replace('http://', '').strip('/')
 
     # -----------------------------------------------------------------------
-    # PROXY MODE (restored): Route reCAPTCHA through our server so the
-    # co= parameter and origin checks are satisfied (sitekey is registered
-    # for the captchatypers domain, not Railway — proxy makes it work).
-    # We patch the JS handshake so anchor↔bframe messaging works cross-origin.
+    # PROXY MODE: Route reCAPTCHA through slot-specific proxy
     # -----------------------------------------------------------------------
-    raw_html = raw_html.replace('https://{Domain}/recaptcha/', f'/recaptcha_proxy/{domain_clean}/')
-    raw_html = raw_html.replace('https://www.google.com/recaptcha/', f'/recaptcha_proxy/{domain_clean}/')
-    raw_html = raw_html.replace('https://www.gstatic.com/recaptcha/', f'/gstatic_proxy/{domain_clean}/')
+    raw_html = raw_html.replace('https://{Domain}/recaptcha/', f'/recaptcha_proxy/{slot}/{domain_clean}/')
+    raw_html = raw_html.replace('https://www.google.com/recaptcha/', f'/recaptcha_proxy/{slot}/{domain_clean}/')
+    raw_html = raw_html.replace('https://www.gstatic.com/recaptcha/', f'/gstatic_proxy/{slot}/{domain_clean}/')
     raw_html = raw_html.replace('https://{Domain}/1/', 'https://js.hcaptcha.com/1/')
     raw_html = raw_html.replace('https://{Domain}/turnstile/', 'https://challenges.cloudflare.com/turnstile/')
     raw_html = raw_html.replace('{Domain}', 'www.google.com')

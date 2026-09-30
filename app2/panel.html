@@ -164,6 +164,10 @@ try {
         if (!el || el._webviewSetupDone) return el;
         el._webviewSetupDone = true;
 
+        window._webviewRegSeq = (window._webviewRegSeq || 0) + 1;
+        el._partId = ((window._webviewRegSeq - 1) % 2) + 1;
+        el.dataset.partId = el._partId;
+
         el.clearStorageData = function() { return Promise.resolve(); };
         el.setProxy = function() { return Promise.resolve(); };
         el.setCookies = function() { return Promise.resolve(); };
@@ -241,17 +245,40 @@ try {
             self.dataset.frameId = frameId;
             self._currentFrameId = frameId;
 
+            // Determine panel and part
+            var pId = parseInt(window.CT_PANEL_ID || '1') || 1;
+            var allWebviews = Array.from(document.querySelectorAll('iframe[data-is-webview="true"], iframe.ct-webview-frame, webview'));
+            var partIdx = allWebviews.indexOf(self);
+            var partId = (partIdx !== -1) ? ((partIdx % 2) + 1) : (self._partId || 1);
+            self.dataset.partId = partId;
+
+            // Multi-Proxy Slot Mapping:
+            // Panel 1, Part 1 -> Slot 1 (PROXY_1)
+            // Panel 1, Part 2 -> Slot 2 (PROXY_2)
+            // Panel 2, Part 1 -> Slot 3 (PROXY_3)
+            // Panel 2, Part 2 -> Slot 4 (PROXY_4)
+            var slot = ((pId - 1) * 2) + partId;
+            self.dataset.slot = slot;
+            console.log('[CT Multi-Proxy] Panel ' + pId + ' Part ' + partId + ' -> Assigned Slot ' + slot + ' (PROXY_' + slot + ')');
+
             try {
                 var xhr = new XMLHttpRequest();
                 xhr.open('POST', '/store_captcha_frame', false); // Synchronous XHR
                 xhr.setRequestHeader('Content-Type', 'application/json');
-                xhr.send(JSON.stringify({ id: frameId, html: htmlContent, domain: baseUrl }));
+                xhr.send(JSON.stringify({ 
+                    id: frameId, 
+                    html: htmlContent, 
+                    domain: baseUrl,
+                    panelId: pId,
+                    partId: partId,
+                    slot: slot
+                }));
             } catch(e) {
                 console.error('[Sync Store Error]', e);
             }
 
             self.removeAttribute('srcdoc');
-            self.src = '/render_captcha_frame?id=' + frameId;
+            self.src = '/render_captcha_frame?id=' + frameId + '&slot=' + slot + '&panel=' + pId + '&part=' + partId;
 
             setTimeout(function() {
                 var loadedEvt = new Event('console-message');
