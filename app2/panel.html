@@ -253,14 +253,14 @@ try {
             self.dataset.partId = partId;
 
             // Multi-Proxy Slot Mapping:
-            // Panel 1, Part 1 -> Slot 1 (PROXY_1)
-            // Panel 1, Part 2 -> Slot 2 (PROXY_2)
-            // Panel 2, Part 1 -> Slot 3 (PROXY_3)
-            // Panel 2, Part 2 -> Slot 4 (PROXY_4)
+            // Panel 1, Part 1 -> Slot 1
+            // Panel 1, Part 2 -> Slot 2
+            // Panel 2, Part 1 -> Slot 3
+            // Panel 2, Part 2 -> Slot 4
             var slot = ((pId - 1) * 2) + partId;
             self.dataset.slot = slot;
-            console.log('[CT Multi-Proxy] Panel ' + pId + ' Part ' + partId + ' -> Assigned Slot ' + slot + ' (PROXY_' + slot + ')');
 
+            var assignedProxyNum = slot;
             try {
                 var xhr = new XMLHttpRequest();
                 xhr.open('POST', '/store_captcha_frame', false); // Synchronous XHR
@@ -273,12 +273,20 @@ try {
                     partId: partId,
                     slot: slot
                 }));
+                if (xhr.status === 200) {
+                    var resp = JSON.parse(xhr.responseText);
+                    if (resp && resp.proxy_num) {
+                        assignedProxyNum = resp.proxy_num;
+                        self.dataset.proxyNum = assignedProxyNum;
+                        console.log('[CT Multi-Proxy] Panel ' + pId + ' Part ' + partId + ' (Slot ' + slot + ') -> Assigned Proxy #' + assignedProxyNum + ' (' + (resp.proxy_safe || '') + ')');
+                    }
+                }
             } catch(e) {
                 console.error('[Sync Store Error]', e);
             }
 
             self.removeAttribute('srcdoc');
-            self.src = '/render_captcha_frame?id=' + frameId + '&slot=' + slot + '&panel=' + pId + '&part=' + partId;
+            self.src = '/render_captcha_frame?id=' + frameId + '&slot=' + slot + '&panel=' + pId + '&part=' + partId + '&proxy_num=' + assignedProxyNum;
 
             setTimeout(function() {
                 var loadedEvt = new Event('console-message');

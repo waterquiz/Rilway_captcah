@@ -15,65 +15,211 @@ CAPTCHA_FRAMES = {}
 PROXY_CACHE = {}
 
 # ---------------------------------------------------------------------------
-# Multi-Proxy Configuration for 4 Slots:
-# Slot 1: Panel 1, Part 1 -> PROXY_1 (or HTTP_PROXY_1)
-# Slot 2: Panel 1, Part 2 -> PROXY_2 (or HTTP_PROXY_2)
-# Slot 3: Panel 2, Part 1 -> PROXY_3 (or HTTP_PROXY_3)
-# Slot 4: Panel 2, Part 2 -> PROXY_4 (or HTTP_PROXY_4)
-# Fallback: HTTP_PROXY / HTTPS_PROXY
+# Multi-Proxy Configuration & Mode Detection System:
+# - Mode 1: Single Global Proxy (HTTP_PROXY or 1 proxy). Shared by all panels/parts.
+# - Mode 2: 4-Slot Dedicated Proxies (PROXY_1 to PROXY_4).
+# - Mode 3: Dynamic Rotating Proxy Pool (>4 proxies, e.g. 12 proxies).
+#           Staggered round-robin (Step +4) across 4 slots with automatic looping.
 # ---------------------------------------------------------------------------
-SLOT_OPENERS = {}
+OPENER_CACHE = {}
+SLOT_CAPTCHA_COUNTERS = {1: 0, 2: 0, 3: 0, 4: 0}
+
+def format_safe_proxy(p):
+    """Format proxy URL without exposing credentials."""
+    if not p:
+        return "Direct (No Proxy)"
+    try:
+        parsed = urllib.parse.urlparse(p)
+        host_port = parsed.netloc.split('@')[-1] if '@' in parsed.netloc else parsed.netloc
+        if not host_port:
+            host_port = p.split('@')[-1]
+        return f"{parsed.scheme or 'http'}://{host_port}"
+    except Exception:
+        return p.split('@')[-1]
+
+# Discover indexed proxies: PROXY_1 to PROXY_100
+INDEXED_PROXIES = {}
+for i in range(1, 101):
+    val = (
+        os.environ.get(f'PROXY_{i}') or
+        os.environ.get(f'HTTP_PROXY_{i}') or
+        os.environ.get(f'HTTPS_PROXY_{i}') or
+        os.environ.get(f'proxy_{i}')
+    )
+    if val and val.strip():
+        INDEXED_PROXIES[i] = val.strip()
+
+GLOBAL_PROXY = (
+    os.environ.get('HTTPS_PROXY') or
+    os.environ.get('HTTP_PROXY') or
+    os.environ.get('https_proxy') or
+    os.environ.get('http_proxy')
+)
+if GLOBAL_PROXY:
+    GLOBAL_PROXY = GLOBAL_PROXY.strip()
+
+# Determine Mode
+if len(INDEXED_PROXIES) > 4:
+    # MODE 3: Dynamic Rotating Proxy Pool (e.g. 5 to 12+ proxies)
+    PROXY_MODE = 3
+    sorted_keys = sorted(INDEXED_PROXIES.keys())
+    PROXY_POOL = [INDEXED_PROXIES[k] for k in sorted_keys]
+elif len(INDEXED_PROXIES) >= 2 and len(INDEXED_PROXIES) <= 4:
+    # MODE 2: Dedicated 4-Slot Multi-Proxy
+    PROXY_MODE = 2
+    PROXY_POOL = []
+elif len(INDEXED_PROXIES) == 1 or GLOBAL_PROXY:
+    # MODE 1: Single Global Proxy
+    PROXY_MODE = 1
+    PROXY_POOL = []
+    if not GLOBAL_PROXY and 1 in INDEXED_PROXIES:
+        GLOBAL_PROXY = INDEXED_PROXIES[1]
+else:
+    # MODE 0: Direct Connection (no proxies configured)
+    PROXY_MODE = 0
+    PROXY_POOL = []
+
+def get_proxy_by_number(proxy_num):
+    """Retrieve actual proxy URL for a given proxy_num (1-indexed)."""
+    try:
+        p_num = int(proxy_num)
+    except (ValueError, TypeError):
+        p_num = 1
+
+    if PROXY_MODE == 3:
+        if not PROXY_POOL:
+            return GLOBAL_PROXY
+        idx = (p_num - 1) % len(PROXY_POOL)
+        return PROXY_POOL[idx]
+    elif PROXY_MODE == 2:
+        return INDEXED_PROXIES.get(p_num) or GLOBAL_PROXY
+    elif PROXY_MODE == 1:
+        return GLOBAL_PROXY
+    return None
 
 def get_proxy_for_slot(slot):
+    """Fallback helper to get proxy for a slot."""
+    try:
+        s = int(slot or 1)
+    except (ValueError, TypeError):
+        s = 1
+    return get_proxy_by_number(s)
+
+def allocate_proxy_for_slot(slot, panel_id=None, part_id=None):
+    """
+    Allocate a proxy for a new captcha request on a given slot (1-4).
+    Updates rotation counters and prints clean railway logs.
+    Returns (proxy_num, safe_proxy_string).
+    """
     try:
         slot = int(slot or 1)
     except (ValueError, TypeError):
         slot = 1
-    # Check specific slot proxy: PROXY_1, PROXY_2, PROXY_3, PROXY_4
-    proxy = (
-        os.environ.get(f'PROXY_{slot}') or
-        os.environ.get(f'HTTP_PROXY_{slot}') or
-        os.environ.get(f'HTTPS_PROXY_{slot}') or
-        os.environ.get(f'proxy_{slot}')
-    )
-    if not proxy:
-        # Fallback to general proxy
-        proxy = (
-            os.environ.get('HTTPS_PROXY') or
-            os.environ.get('HTTP_PROXY') or
-            os.environ.get('https_proxy') or
-            os.environ.get('http_proxy')
-        )
-    return proxy.strip() if proxy else None
+    if slot < 1 or slot > 4:
+        slot = 1
 
-def get_opener_for_slot(slot):
-    proxy_url = get_proxy_for_slot(slot)
+    if panel_id is None:
+        panel_id = ((slot - 1) // 2) + 1
+    if part_id is None:
+        part_id = ((slot - 1) % 2) + 1
+
+    SLOT_CAPTCHA_COUNTERS[slot] += 1
+    captcha_idx = SLOT_CAPTCHA_COUNTERS[slot]
+
+    if PROXY_MODE == 3:
+        pool_len = len(PROXY_POOL)
+        round_num = captcha_idx - 1
+        pool_idx = ((slot - 1) + (round_num * 4)) % pool_len
+        proxy_num = pool_idx + 1
+        proxy_url = PROXY_POOL[pool_idx]
+        safe_p = format_safe_proxy(proxy_url)
+        is_loop = (round_num > 0) and (round_num * 4 % pool_len == 0)
+        loop_tag = " [Pool Looped]" if is_loop else ""
+        print(f"  [Panel {panel_id} Part {part_id} | Slot {slot}] Captcha #{captcha_idx} -> Rotating{loop_tag} to Proxy #{proxy_num}/{pool_len}: {safe_p}")
+        return proxy_num, safe_p
+
+    elif PROXY_MODE == 2:
+        proxy_num = slot
+        proxy_url = INDEXED_PROXIES.get(slot) or GLOBAL_PROXY
+        safe_p = format_safe_proxy(proxy_url)
+        var_name = f"PROXY_{slot}" if slot in INDEXED_PROXIES else "HTTP_PROXY"
+        print(f"  [Panel {panel_id} Part {part_id} | Slot {slot}] Captcha #{captcha_idx} -> Using {var_name}: {safe_p}")
+        return proxy_num, safe_p
+
+    elif PROXY_MODE == 1:
+        proxy_num = 1
+        safe_p = format_safe_proxy(GLOBAL_PROXY)
+        print(f"  [Panel {panel_id} Part {part_id} | Slot {slot}] Captcha #{captcha_idx} -> Using Global Proxy: {safe_p}")
+        return 1, safe_p
+
+    else:
+        print(f"  [Panel {panel_id} Part {part_id} | Slot {slot}] Captcha #{captcha_idx} -> Direct Connection (No Proxy)")
+        return 1, "Direct"
+
+def get_opener_for_proxy_url(proxy_url):
+    """Return urllib OpenerDirector configured for proxy_url (cached)."""
     if not proxy_url:
         return urllib.request.build_opener()
-    
-    if proxy_url in SLOT_OPENERS:
-        return SLOT_OPENERS[proxy_url]
+    if proxy_url in OPENER_CACHE:
+        return OPENER_CACHE[proxy_url]
     
     proxy_handler = urllib.request.ProxyHandler({
         'http': proxy_url,
         'https': proxy_url
     })
     opener = urllib.request.build_opener(proxy_handler)
-    SLOT_OPENERS[proxy_url] = opener
+    OPENER_CACHE[proxy_url] = opener
     return opener
 
-print("=" * 65)
-print("=== CAPTCHATYPERS MULTI-PROXY (4 SLOTS) INITIALIZED ===")
-for s in range(1, 5):
-    p = get_proxy_for_slot(s)
-    panel_num = ((s - 1) // 2) + 1
-    part_num = ((s - 1) % 2) + 1
-    if p:
-        safe_p = p.split('@')[-1] if '@' in p else p
-        print(f"  [Slot {s}] Panel {panel_num}, Part {part_num} -> Proxy: {safe_p}")
-    else:
-        print(f"  [Slot {s}] Panel {panel_num}, Part {part_num} -> Direct Connection (No PROXY_{s} set)")
-print("=" * 65)
+def get_opener_for_proxy_num(proxy_num):
+    proxy_url = get_proxy_by_number(proxy_num)
+    return get_opener_for_proxy_url(proxy_url)
+
+def get_opener_for_slot(slot):
+    return get_opener_for_proxy_num(slot)
+
+# ---------------------------------------------------------------------------
+# Startup Banner Logs for Railway
+# ---------------------------------------------------------------------------
+print("=" * 72)
+if PROXY_MODE == 3:
+    print(f"=== CAPTCHATYPERS PROXY SYSTEM: MODE 3 (ROTATING POOL - {len(PROXY_POOL)} PROXIES) ===")
+    print("=" * 72)
+    print(f"Detected {len(PROXY_POOL)} Proxies in Pool. Staggered 4-Slot Rotation Pattern (Step +4):")
+    print("  - [Slot 1] Panel 1, Part 1 -> Proxy #1, Proxy #5, Proxy #9... (Loops back to 1)")
+    print("  - [Slot 2] Panel 1, Part 2 -> Proxy #2, Proxy #6, Proxy #10... (Loops back to 2)")
+    print("  - [Slot 3] Panel 2, Part 1 -> Proxy #3, Proxy #7, Proxy #11... (Loops back to 3)")
+    print("  - [Slot 4] Panel 2, Part 2 -> Proxy #4, Proxy #8, Proxy #12... (Loops back to 4)")
+    print("Configured Proxies:")
+    for idx, p in enumerate(PROXY_POOL, start=1):
+        print(f"  Proxy #{idx:02d}: {format_safe_proxy(p)}")
+elif PROXY_MODE == 2:
+    print("=== CAPTCHATYPERS PROXY SYSTEM: MODE 2 (4-SLOT DEDICATED PROXIES) ===")
+    print("=" * 72)
+    print("Slot-Dedicated Proxies Configured:")
+    for s in range(1, 5):
+        panel_n = ((s - 1) // 2) + 1
+        part_n = ((s - 1) % 2) + 1
+        p = INDEXED_PROXIES.get(s) or GLOBAL_PROXY
+        if p:
+            print(f"  [Slot {s}] Panel {panel_n}, Part {part_n} -> PROXY_{s}: {format_safe_proxy(p)}")
+        else:
+            print(f"  [Slot {s}] Panel {panel_n}, Part {part_n} -> Direct Connection (No PROXY_{s} set)")
+elif PROXY_MODE == 1:
+    print("=== CAPTCHATYPERS PROXY SYSTEM: MODE 1 (SINGLE GLOBAL PROXY) ===")
+    print("=" * 72)
+    safe_gp = format_safe_proxy(GLOBAL_PROXY)
+    print(f"Single Proxy Detected: {safe_gp}")
+    print("All Panels and Parts will share this proxy:")
+    print(f"  - [Slot 1] Panel 1, Part 1 -> {safe_gp}")
+    print(f"  - [Slot 2] Panel 1, Part 2 -> {safe_gp}")
+    print(f"  - [Slot 3] Panel 2, Part 1 -> {safe_gp}")
+    print(f"  - [Slot 4] Panel 2, Part 2 -> {safe_gp}")
+else:
+    print("=== CAPTCHATYPERS PROXY SYSTEM: DIRECT CONNECTION (NO PROXIES) ===")
+    print("=" * 72)
+    print("No proxy variables detected. Requests will connect directly via server IP.")
+print("=" * 72)
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -202,19 +348,35 @@ def store_captcha_frame():
     html = data.get('html', '')
     domain = data.get('domain', 'worker.captchatypers.com')
     slot = int(data.get('slot', 1))
+    panel_id = int(data.get('panelId', ((slot - 1) // 2) + 1))
+    part_id = int(data.get('partId', ((slot - 1) % 2) + 1))
     domain_clean = domain.replace('https://', '').replace('http://', '').strip('/')
     if frame_id:
         if len(CAPTCHA_FRAMES) > 500:
             keys_to_delete = list(CAPTCHA_FRAMES.keys())[:-250]
             for k in keys_to_delete:
                 CAPTCHA_FRAMES.pop(k, None)
-        CAPTCHA_FRAMES[frame_id] = {'html': html, 'domain': domain_clean, 'slot': slot}
-        return jsonify({'success': True})
+        proxy_num, safe_p = allocate_proxy_for_slot(slot, panel_id, part_id)
+        CAPTCHA_FRAMES[frame_id] = {
+            'html': html,
+            'domain': domain_clean,
+            'slot': slot,
+            'panelId': panel_id,
+            'partId': part_id,
+            'proxy_num': proxy_num,
+            'proxy_safe': safe_p
+        }
+        return jsonify({
+            'success': True,
+            'slot': slot,
+            'proxy_num': proxy_num,
+            'proxy_safe': safe_p
+        })
     return jsonify({'error': 'Missing frame id'}), 400
 
-@app.route('/recaptcha_proxy/<int:slot>/<domain>/<path:endpoint>', methods=['GET', 'POST', 'OPTIONS'])
+@app.route('/recaptcha_proxy/<int:proxy_num>/<domain>/<path:endpoint>', methods=['GET', 'POST', 'OPTIONS'])
 @app.route('/recaptcha_proxy/<domain>/<path:endpoint>', methods=['GET', 'POST', 'OPTIONS'])
-def recaptcha_proxy(domain, endpoint, slot=1):
+def recaptcha_proxy(domain, endpoint, proxy_num=1):
     if request.method == 'OPTIONS':
         resp = Response()
         resp.headers['Access-Control-Allow-Origin'] = '*'
@@ -223,9 +385,9 @@ def recaptcha_proxy(domain, endpoint, slot=1):
         return resp
 
     try:
-        slot = int(slot or 1)
+        proxy_num = int(proxy_num or 1)
     except (ValueError, TypeError):
-        slot = 1
+        proxy_num = 1
 
     ref_domain = f"https://{domain}/"
     co_val = get_co_for_domain(domain)
@@ -255,7 +417,7 @@ def recaptcha_proxy(domain, endpoint, slot=1):
     if request.method == 'POST' or request.headers.get('Origin'):
         req_headers['Origin'] = f"https://{domain}"
 
-    cache_key = f"{target_url}_{domain}_s{slot}"
+    cache_key = f"{target_url}_{domain}_p{proxy_num}"
     if request.method == 'GET' and cache_key in PROXY_CACHE:
         cached_content, cached_type = PROXY_CACHE[cache_key]
         r = Response(cached_content, status=200, content_type=cached_type)
@@ -282,7 +444,7 @@ def recaptcha_proxy(domain, endpoint, slot=1):
     else:
         req = urllib.request.Request(target_url, headers=req_headers)
 
-    opener = get_opener_for_slot(slot)
+    opener = get_opener_for_proxy_num(proxy_num)
     try:
         with opener.open(req, timeout=30) as resp:
             content = resp.read()
@@ -296,9 +458,9 @@ def recaptcha_proxy(domain, endpoint, slot=1):
                 # Remove SRI integrity check
                 content_text = re.sub(r'po\.integrity\s*=\s*[\'"][^\'"]*[\'"];?', '', content_text)
                 
-                # Rewrite Google endpoints preserving slot
-                content_text = content_text.replace('https://www.google.com/recaptcha/', f'/recaptcha_proxy/{slot}/{domain}/')
-                content_text = content_text.replace('https://www.gstatic.com/recaptcha/', f'/gstatic_proxy/{slot}/{domain}/')
+                # Rewrite Google endpoints preserving proxy_num
+                content_text = content_text.replace('https://www.google.com/recaptcha/', f'/recaptcha_proxy/{proxy_num}/{domain}/')
+                content_text = content_text.replace('https://www.gstatic.com/recaptcha/', f'/gstatic_proxy/{proxy_num}/{domain}/')
 
                 # In JS scripts (recaptcha__en.js), ensure cross-window postMessage handshake uses targetOrigin '*'
                 if 'javascript' in content_type:
@@ -408,7 +570,7 @@ def recaptcha_proxy(domain, endpoint, slot=1):
         r.headers.pop('Content-Security-Policy', None)
         return r
     except Exception as e:
-        print(f"[Slot {slot}] Proxy error for {target_url}: {e}")
+        print(f"[Proxy #{proxy_num}] Proxy error for {target_url}: {e}")
         return (f"Proxy error: {e}", 502)
 
 @app.route('/recaptcha/<path:endpoint>', methods=['GET', 'POST', 'OPTIONS'])
@@ -421,18 +583,18 @@ def direct_recaptcha_fallback(endpoint):
         resp.headers['Access-Control-Allow-Headers'] = '*'
         return resp
     domain = 'worker.captchatypers.com'
-    slot = request.args.get('slot', 1)
-    return recaptcha_proxy(domain, endpoint, slot=slot)
+    proxy_num = request.args.get('proxy_num') or request.args.get('slot', 1)
+    return recaptcha_proxy(domain, endpoint, proxy_num=proxy_num)
 
-@app.route('/audio_proxy/<int:slot>/<path:audio_url>', methods=['GET'])
+@app.route('/audio_proxy/<int:proxy_num>/<path:audio_url>', methods=['GET'])
 @app.route('/audio_proxy/<path:audio_url>', methods=['GET'])
-def audio_proxy(audio_url, slot=1):
-    """Proxy reCAPTCHA audio challenge MP3 files through our server using slot proxy."""
+def audio_proxy(audio_url, proxy_num=1):
+    """Proxy reCAPTCHA audio challenge MP3 files through our server using assigned proxy."""
     try:
         try:
-            slot = int(slot or 1)
+            proxy_num = int(proxy_num or 1)
         except (ValueError, TypeError):
-            slot = 1
+            proxy_num = 1
         full_url = urllib.parse.unquote(audio_url)
         if not full_url.startswith('http'):
             full_url = 'https://' + full_url
@@ -443,7 +605,7 @@ def audio_proxy(audio_url, slot=1):
             'Referer': 'https://www.google.com/',
         }
         req = urllib.request.Request(full_url, headers=req_headers)
-        opener = get_opener_for_slot(slot)
+        opener = get_opener_for_proxy_num(proxy_num)
         with opener.open(req, timeout=30) as resp:
             content = resp.read()
             ct = resp.headers.get('Content-Type', 'audio/mpeg')
@@ -452,13 +614,13 @@ def audio_proxy(audio_url, slot=1):
             r.headers['Cache-Control'] = 'public, max-age=300'
             return r
     except Exception as e:
-        print(f"[Slot {slot}] Audio proxy error: {e}")
+        print(f"[Proxy #{proxy_num}] Audio proxy error: {e}")
         return (f"Audio proxy error: {e}", 500)
 
 
-@app.route('/gstatic_proxy/<int:slot>/<domain>/<path:endpoint>', methods=['GET', 'OPTIONS'])
+@app.route('/gstatic_proxy/<int:proxy_num>/<domain>/<path:endpoint>', methods=['GET', 'OPTIONS'])
 @app.route('/gstatic_proxy/<domain>/<path:endpoint>', methods=['GET', 'OPTIONS'])
-def gstatic_proxy(domain, endpoint, slot=1):
+def gstatic_proxy(domain, endpoint, proxy_num=1):
     if request.method == 'OPTIONS':
         resp = Response()
         resp.headers['Access-Control-Allow-Origin'] = '*'
@@ -467,9 +629,9 @@ def gstatic_proxy(domain, endpoint, slot=1):
         return resp
 
     try:
-        slot = int(slot or 1)
+        proxy_num = int(proxy_num or 1)
     except (ValueError, TypeError):
-        slot = 1
+        proxy_num = 1
 
     ref_domain = f"https://{domain}/"
     qs = request.query_string.decode('utf-8', errors='ignore')
@@ -484,7 +646,7 @@ def gstatic_proxy(domain, endpoint, slot=1):
         'Accept-Language': request.headers.get('Accept-Language', 'en-US,en;q=0.9'),
     }
 
-    cache_key = f"{target_url}_{domain}_s{slot}"
+    cache_key = f"{target_url}_{domain}_p{proxy_num}"
     if request.method == 'GET' and cache_key in PROXY_CACHE:
         cached_content, cached_type = PROXY_CACHE[cache_key]
         r = Response(cached_content, status=200, content_type=cached_type)
@@ -496,7 +658,7 @@ def gstatic_proxy(domain, endpoint, slot=1):
         return r
 
     req = urllib.request.Request(target_url, headers=req_headers)
-    opener = get_opener_for_slot(slot)
+    opener = get_opener_for_proxy_num(proxy_num)
     try:
         with opener.open(req, timeout=30) as resp:
             content = resp.read()
@@ -508,8 +670,8 @@ def gstatic_proxy(domain, endpoint, slot=1):
             if 'javascript' in content_type or 'html' in content_type or 'css' in content_type:
                 content_text = content.decode('utf-8', errors='ignore')
                 content_text = re.sub(r'po\.integrity\s*=\s*[\'"][^\'"]*[\'"];?', '', content_text)
-                content_text = content_text.replace('https://www.google.com/recaptcha/', f'/recaptcha_proxy/{slot}/{domain}/')
-                content_text = content_text.replace('https://www.gstatic.com/recaptcha/', f'/gstatic_proxy/{slot}/{domain}/')
+                content_text = content_text.replace('https://www.google.com/recaptcha/', f'/recaptcha_proxy/{proxy_num}/{domain}/')
+                content_text = content_text.replace('https://www.gstatic.com/recaptcha/', f'/gstatic_proxy/{proxy_num}/{domain}/')
                 if 'javascript' in content_type:
                     # Timeout patches
                     content_text = content_text.replace('k===void 0?5E3:k', 'k===void 0?60E3:k')
@@ -532,10 +694,10 @@ def gstatic_proxy(domain, endpoint, slot=1):
                     content_text = content_text.replace('N&&k&&C&&u.ports.length>B', 'N&&C&&u.ports.length>B')
                     content_text = content_text.replace('Z.R(N.origin)', 'true')
 
-                    # Rewrite audio challenge MP3 URLs through our audio proxy preserving slot
+                    # Rewrite audio challenge MP3 URLs through our audio proxy preserving proxy_num
                     content_text = re.sub(
                         r'(https://www\.google\.com/recaptcha/(?:api2|enterprise)/payload)',
-                        rf'/audio_proxy/{slot}/\1',
+                        rf'/audio_proxy/{proxy_num}/\1',
                         content_text
                     )
 
@@ -564,15 +726,15 @@ def gstatic_proxy(domain, endpoint, slot=1):
         r.headers.pop('Content-Security-Policy', None)
         return r
     except Exception as e:
-        print(f"[Slot {slot}] Gstatic proxy error for {target_url}: {e}")
+        print(f"[Proxy #{proxy_num}] Gstatic proxy error for {target_url}: {e}")
         return (f"Proxy error: {e}", 502)
 
 @app.route('/gstatic/<path:endpoint>', methods=['GET', 'OPTIONS'])
 def direct_gstatic_fallback(endpoint):
     """Catch any relative /gstatic/... calls and proxy them."""
     domain = 'worker.captchatypers.com'
-    slot = request.args.get('slot', 1)
-    return gstatic_proxy(domain, endpoint, slot=slot)
+    proxy_num = request.args.get('proxy_num') or request.args.get('slot', 1)
+    return gstatic_proxy(domain, endpoint, proxy_num=proxy_num)
 
 @app.route('/render_captcha_frame', methods=['GET'])
 def render_captcha_frame():
@@ -583,15 +745,22 @@ def render_captcha_frame():
         raw_html = request.args.get('html', '')
         ref_domain = request.args.get('domain', 'worker.captchatypers.com')
         slot = request.args.get('slot', 1)
+        panel_id = request.args.get('panel', 1)
+        part_id = request.args.get('part', 1)
+        proxy_num, safe_p = allocate_proxy_for_slot(slot, panel_id, part_id)
     else:
         raw_html = frame_data['html']
         ref_domain = frame_data['domain']
-        slot = frame_data.get('slot') or request.args.get('slot') or 1
+        slot = frame_data.get('slot', 1)
+        panel_id = frame_data.get('panelId', 1)
+        part_id = frame_data.get('partId', 1)
+        proxy_num = frame_data.get('proxy_num') or request.args.get('proxy_num') or slot
+        safe_p = frame_data.get('proxy_safe', '')
 
     try:
-        slot = int(slot)
+        proxy_num = int(proxy_num)
     except (ValueError, TypeError):
-        slot = 1
+        proxy_num = 1
 
     if not raw_html:
         return ("No HTML provided", 400)
@@ -599,11 +768,11 @@ def render_captcha_frame():
     domain_clean = ref_domain.replace('https://', '').replace('http://', '').strip('/')
 
     # -----------------------------------------------------------------------
-    # PROXY MODE: Route reCAPTCHA through slot-specific proxy
+    # PROXY MODE: Route reCAPTCHA through assigned proxy
     # -----------------------------------------------------------------------
-    raw_html = raw_html.replace('https://{Domain}/recaptcha/', f'/recaptcha_proxy/{slot}/{domain_clean}/')
-    raw_html = raw_html.replace('https://www.google.com/recaptcha/', f'/recaptcha_proxy/{slot}/{domain_clean}/')
-    raw_html = raw_html.replace('https://www.gstatic.com/recaptcha/', f'/gstatic_proxy/{slot}/{domain_clean}/')
+    raw_html = raw_html.replace('https://{Domain}/recaptcha/', f'/recaptcha_proxy/{proxy_num}/{domain_clean}/')
+    raw_html = raw_html.replace('https://www.google.com/recaptcha/', f'/recaptcha_proxy/{proxy_num}/{domain_clean}/')
+    raw_html = raw_html.replace('https://www.gstatic.com/recaptcha/', f'/gstatic_proxy/{proxy_num}/{domain_clean}/')
     raw_html = raw_html.replace('https://{Domain}/1/', 'https://js.hcaptcha.com/1/')
     raw_html = raw_html.replace('https://{Domain}/turnstile/', 'https://challenges.cloudflare.com/turnstile/')
     raw_html = raw_html.replace('{Domain}', 'www.google.com')
