@@ -59,23 +59,20 @@ if GLOBAL_PROXY:
     GLOBAL_PROXY = GLOBAL_PROXY.strip()
 
 # Determine Mode
-if len(INDEXED_PROXIES) > 4:
-    # MODE 3: Dynamic Rotating Proxy Pool (e.g. 5 to 12+ proxies)
+# Determine Mode
+if len(INDEXED_PROXIES) >= 2:
+    # Any multi-proxy pool (2 to 100 proxies) rotates dynamically on every captcha
     PROXY_MODE = 3
     sorted_keys = sorted(INDEXED_PROXIES.keys())
     PROXY_POOL = [INDEXED_PROXIES[k] for k in sorted_keys]
-elif len(INDEXED_PROXIES) >= 2 and len(INDEXED_PROXIES) <= 4:
-    # MODE 2: Dedicated 4-Slot Multi-Proxy
-    PROXY_MODE = 2
-    PROXY_POOL = []
 elif len(INDEXED_PROXIES) == 1 or GLOBAL_PROXY:
-    # MODE 1: Single Global Proxy
+    # Single Global Proxy
     PROXY_MODE = 1
     PROXY_POOL = []
     if not GLOBAL_PROXY and 1 in INDEXED_PROXIES:
         GLOBAL_PROXY = INDEXED_PROXIES[1]
 else:
-    # MODE 0: Direct Connection (no proxies configured)
+    # Direct Connection (no proxies configured)
     PROXY_MODE = 0
     PROXY_POOL = []
 
@@ -91,8 +88,6 @@ def get_proxy_by_number(proxy_num):
             return GLOBAL_PROXY
         idx = (p_num - 1) % len(PROXY_POOL)
         return PROXY_POOL[idx]
-    elif PROXY_MODE == 2:
-        return INDEXED_PROXIES.get(p_num) or GLOBAL_PROXY
     elif PROXY_MODE == 1:
         return GLOBAL_PROXY
     return None
@@ -107,8 +102,8 @@ def get_proxy_for_slot(slot):
 
 def allocate_proxy_for_slot(slot, panel_id=None, part_id=None):
     """
-    Allocate a proxy for a new captcha request on a given slot (1-4).
-    Updates rotation counters and prints clean railway logs.
+    Allocate a proxy for a new captcha request on a given slot.
+    Rotates dynamically so every captcha receives a different proxy.
     Returns (proxy_num, safe_proxy_string).
     """
     try:
@@ -131,22 +126,23 @@ def allocate_proxy_for_slot(slot, panel_id=None, part_id=None):
     if PROXY_MODE == 3:
         pool_len = len(PROXY_POOL)
         round_num = captcha_idx - 1
-        step = 10 if (slot > 4 or pool_len >= 20) else 4
+        active_slots = 10 if (slot > 4 or pool_len >= 20) else 4
+        
+        # Calculate step to prevent overlaps while ensuring rotation
+        if pool_len <= active_slots:
+            step = 1
+        else:
+            step = active_slots
+            if step % pool_len == 0:
+                step = 1
+
         pool_idx = ((slot - 1) + (round_num * step)) % pool_len
         proxy_num = pool_idx + 1
         proxy_url = PROXY_POOL[pool_idx]
         safe_p = format_safe_proxy(proxy_url)
         is_loop = (round_num > 0) and ((round_num * step) % pool_len == 0)
         loop_tag = " [Pool Looped]" if is_loop else ""
-        print(f"  [Panel {panel_id} Part {part_id} | Slot {slot}] Captcha #{captcha_idx} -> Rotating{loop_tag} to Proxy #{proxy_num}/{pool_len}: {safe_p}")
-        return proxy_num, safe_p
-
-    elif PROXY_MODE == 2:
-        proxy_num = slot
-        proxy_url = INDEXED_PROXIES.get(slot) or GLOBAL_PROXY
-        safe_p = format_safe_proxy(proxy_url)
-        var_name = f"PROXY_{slot}" if slot in INDEXED_PROXIES else "HTTP_PROXY"
-        print(f"  [Panel {panel_id} Part {part_id} | Slot {slot}] Captcha #{captcha_idx} -> Using {var_name}: {safe_p}")
+        print(f"  [Panel {panel_id} Part {part_id} | Slot {slot}] Captcha #{captcha_idx} -> Using Proxy #{proxy_num}/{pool_len}{loop_tag}: {safe_p}")
         return proxy_num, safe_p
 
     elif PROXY_MODE == 1:
@@ -186,38 +182,32 @@ def get_opener_for_slot(slot):
 # ---------------------------------------------------------------------------
 print("=" * 72)
 if PROXY_MODE == 3:
-    step = 10 if len(PROXY_POOL) >= 20 else 4
-    num_slots = 10 if step == 10 else 4
-    num_panels = num_slots // 2
-    print(f"=== CAPTCHATYPERS PROXY SYSTEM: MODE 3 (ROTATING POOL - {len(PROXY_POOL)} PROXIES) ===")
+    pool_len = len(PROXY_POOL)
+    active_slots = 10 if pool_len >= 20 else min(4, max(2, pool_len))
+    step = 1 if pool_len <= active_slots else (1 if active_slots % pool_len == 0 else active_slots)
+    num_panels = (active_slots + 1) // 2
+    print(f"=== CAPTCHATYPERS PROXY SYSTEM: DYNAMIC ROTATING POOL ({pool_len} PROXIES) ===")
     print("=" * 72)
-    print(f"Detected {len(PROXY_POOL)} Proxies in Pool. Staggered {num_panels}-Panel ({num_slots}-Slot) Rotation Pattern (Step +{step}):")
-    for s in range(1, num_slots + 1):
+    print(f"Detected {pool_len} Proxies. Dynamic Staggered Rotation (Step +{step}) across {num_panels} Panels ({active_slots} Slots):")
+    for s in range(1, active_slots + 1):
         p_num = ((s - 1) // 2) + 1
         part_num = ((s - 1) % 2) + 1
-        seq = [((s - 1) + (r * step)) % len(PROXY_POOL) + 1 for r in range(min(4, max(2, len(PROXY_POOL) // step + 1)))]
+        seq = [((s - 1) + (r * step)) % pool_len + 1 for r in range(min(4, max(2, pool_len // max(1, step) + 1)))]
         seq_str = ", ".join(f"Proxy #{x}" for x in seq)
         print(f"  - [Slot {s:02d}] Panel {p_num}, Part {part_num} -> {seq_str}... (Loops back to Proxy #{seq[0]})")
     print("Configured Proxies:")
     for idx, p in enumerate(PROXY_POOL, start=1):
         print(f"  Proxy #{idx:02d}: {format_safe_proxy(p)}")
-elif PROXY_MODE == 2:
-    print("=== CAPTCHATYPERS PROXY SYSTEM: MODE 2 (4-SLOT DEDICATED PROXIES) ===")
-    print("=" * 72)
-    print("Slot-Dedicated Proxies Configured:")
-    for s in range(1, 5):
-        panel_n = ((s - 1) // 2) + 1
-        part_n = ((s - 1) % 2) + 1
-        p = INDEXED_PROXIES.get(s) or GLOBAL_PROXY
-        if p:
-            print(f"  [Slot {s}] Panel {panel_n}, Part {part_n} -> PROXY_{s}: {format_safe_proxy(p)}")
-        else:
-            print(f"  [Slot {s}] Panel {panel_n}, Part {part_n} -> Direct Connection (No PROXY_{s} set)")
 elif PROXY_MODE == 1:
     print("=== CAPTCHATYPERS PROXY SYSTEM: MODE 1 (SINGLE GLOBAL PROXY) ===")
     print("=" * 72)
     safe_gp = format_safe_proxy(GLOBAL_PROXY)
     print(f"Single Proxy Detected: {safe_gp}")
+    print("All Panels and Parts will share this proxy:")
+    print(f"  - [Slot 1] Panel 1, Part 1 -> {safe_gp}")
+    print(f"  - [Slot 2] Panel 1, Part 2 -> {safe_gp}")
+    print(f"  - [Slot 3] Panel 2, Part 1 -> {safe_gp}")
+    print(f"  - [Slot 4] Panel 2, Part 2 -> {safe_gp}")
     print("All Panels and Parts will share this proxy:")
     print(f"  - [Slot 1] Panel 1, Part 1 -> {safe_gp}")
     print(f"  - [Slot 2] Panel 1, Part 2 -> {safe_gp}")
