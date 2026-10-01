@@ -533,10 +533,20 @@ def recaptcha_proxy(domain, endpoint, proxy_num=1):
       notifyDos();
       return;
     }
-    var h3 = document.querySelectorAll('h3, .rc-doscaptcha-header-text, .rc-doscaptcha-body-text, p');
+    var audioErr = document.querySelector('.rc-audiochallenge-error-message');
+    if (audioErr && (audioErr.offsetWidth > 0 || (audioErr.textContent || '').trim().length > 0)) {
+      notifyDos();
+      return;
+    }
+    var h3 = document.querySelectorAll('h3, .rc-doscaptcha-header-text, .rc-doscaptcha-body-text, .rc-audiochallenge-error-message, p, div');
     for (var i = 0; i < h3.length; i++) {
       var txt = (h3[i].innerText || h3[i].textContent || '').toLowerCase();
-      if (txt.indexOf('try again later') !== -1 || txt.indexOf('automated queries') !== -1 || (txt.indexOf('try again') !== -1 && txt.indexOf('network') !== -1)) {
+      if (txt.indexOf('try again later') !== -1 ||
+          txt.indexOf('automated queries') !== -1 ||
+          txt.indexOf('multiple correct solutions') !== -1 ||
+          txt.indexOf('please solve more') !== -1 ||
+          txt.indexOf('multiple correct') !== -1 ||
+          (txt.indexOf('try again') !== -1 && txt.indexOf('network') !== -1)) {
         notifyDos();
         return;
       }
