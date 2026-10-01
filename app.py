@@ -491,6 +491,8 @@ def recaptcha_proxy(domain, endpoint, proxy_num=1):
             content_text = re.sub(r'po\.integrity\s*=\s*[\'"][^\'"]*[\'"];?', '', content_text)
             content_text = content_text.replace('https://www.google.com/recaptcha/', f'/recaptcha_proxy/{proxy_num}/{domain}/')
             content_text = content_text.replace('https://www.gstatic.com/recaptcha/', f'/gstatic_proxy/{proxy_num}/{domain}/')
+            content_text = re.sub(r'https?://+recaptcha_proxy/', f'/recaptcha_proxy/{proxy_num}/{domain}/', content_text)
+            content_text = re.sub(r'(?<!:)//+recaptcha_proxy/', f'/recaptcha_proxy/{proxy_num}/{domain}/', content_text)
 
             if 'javascript' in content_type:
                 content_text = content_text.replace('k===void 0?5E3:k', 'k===void 0?60E3:k')
@@ -701,6 +703,8 @@ def gstatic_proxy(domain, endpoint, proxy_num=1):
             content_text = re.sub(r'po\.integrity\s*=\s*[\'"][^\'"]*[\'"];?', '', content_text)
             content_text = content_text.replace('https://www.google.com/recaptcha/', f'/recaptcha_proxy/{proxy_num}/{domain}/')
             content_text = content_text.replace('https://www.gstatic.com/recaptcha/', f'/gstatic_proxy/{proxy_num}/{domain}/')
+            content_text = re.sub(r'https?://+recaptcha_proxy/', f'/recaptcha_proxy/{proxy_num}/{domain}/', content_text)
+            content_text = re.sub(r'(?<!:)//+recaptcha_proxy/', f'/recaptcha_proxy/{proxy_num}/{domain}/', content_text)
             if 'javascript' in content_type:
                 content_text = content_text.replace('k===void 0?5E3:k', 'k===void 0?60E3:k')
                 content_text = content_text.replace('A=A===void 0?15E3:A', 'A=A===void 0?60E3:A')
@@ -787,6 +791,8 @@ def render_captcha_frame():
     raw_html = raw_html.replace('https://{Domain}/1/', 'https://js.hcaptcha.com/1/')
     raw_html = raw_html.replace('https://{Domain}/turnstile/', 'https://challenges.cloudflare.com/turnstile/')
     raw_html = raw_html.replace('{Domain}', 'www.google.com')
+    raw_html = re.sub(r'https?://+recaptcha_proxy/', f'/recaptcha_proxy/{proxy_num}/{domain_clean}/', raw_html)
+    raw_html = re.sub(r'(?<!:)//+recaptcha_proxy/', f'/recaptcha_proxy/{proxy_num}/{domain_clean}/', raw_html)
 
     safe_frame_id = (frame_id or '').replace('"', '\\"')
 
@@ -794,21 +800,40 @@ def render_captcha_frame():
     window.name = "{safe_frame_id}";
     window._CTOR_FRAME_ID = "{safe_frame_id}";
     (function() {{
+        function notifyParentDos(reason) {{
+            if (window.parent && window.parent !== window) {{
+                window.parent.postMessage({{ type: "ctor-captcha-dos", iframeId: "{safe_frame_id}", error: reason || "try_again_later" }}, "*");
+            }}
+        }}
+
         window.addEventListener("message", function(e) {{
-            if (e && e.data && (e.data.type === "ctor-captcha-dos" || e.data.error === "try_again_later")) {{
-                if (window.parent && window.parent !== window) {{
-                    window.parent.postMessage({{ type: "ctor-captcha-dos", iframeId: "{safe_frame_id}", error: "try_again_later" }}, "*");
-                }}
+            if (e && e.data && (e.data.type === "ctor-captcha-dos" || e.data.error === "try_again_later" || e.data.error === "frame_load_error")) {{
+                notifyParentDos(e.data.error || "try_again_later");
             }}
         }});
+
+        window.addEventListener("error", function(e) {{
+            var target = e.target || e.srcElement;
+            if (target && (target.tagName === 'SCRIPT' || target.tagName === 'IFRAME')) {{
+                var src = target.src || '';
+                if (src.indexOf('api.js') !== -1 || src.indexOf('recaptcha') !== -1 || src.indexOf('proxy') !== -1) {{
+                    notifyParentDos("script_load_error");
+                }}
+            }}
+        }}, true);
+
         var _log = console.log;
         console.log = function() {{
             _log.apply(console, arguments);
             try {{
                 var str = Array.from(arguments).join(" ");
-                if (typeof str === 'string' && (str.indexOf('token:') !== -1 || str.indexOf('client_solution:') !== -1 || str.indexOf('frame loaded') !== -1 || str.indexOf('detect-active') !== -1 || str.indexOf('frame-onload') !== -1 || str.indexOf('captcha-load-error') !== -1 || str.indexOf('ctor-captcha-dos') !== -1 || str.indexOf('try_again_later') !== -1)) {{
-                    if (str.indexOf('ctor-console-event') === -1 && window.parent && window.parent !== window) {{
-                        window.parent.postMessage({{ type: "ctor-console-event", iframeId: "{safe_frame_id}", msg: str }}, "*");
+                if (typeof str === 'string') {{
+                    if (str.indexOf('frame-load-error') !== -1 || str.indexOf('captcha-load-error') !== -1) {{
+                        notifyParentDos("frame_load_error");
+                    }} else if (str.indexOf('token:') !== -1 || str.indexOf('client_solution:') !== -1 || str.indexOf('frame loaded') !== -1 || str.indexOf('detect-active') !== -1 || str.indexOf('frame-onload') !== -1 || str.indexOf('ctor-captcha-dos') !== -1 || str.indexOf('try_again_later') !== -1) {{
+                        if (str.indexOf('ctor-console-event') === -1 && window.parent && window.parent !== window) {{
+                            window.parent.postMessage({{ type: "ctor-console-event", iframeId: "{safe_frame_id}", msg: str }}, "*");
+                        }}
                     }}
                 }}
             }} catch(e){{}}

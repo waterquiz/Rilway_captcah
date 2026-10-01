@@ -428,7 +428,7 @@ try {
 
     // Message forwarder for captcha events and solutions with strict isolation
     window.addEventListener('message', function(event) {
-        if (event.data && typeof event.data === 'object' && (event.data.type === 'ctor-captcha-dos' || event.data.error === 'try_again_later')) {
+        if (event.data && typeof event.data === 'object' && (event.data.type === 'ctor-captcha-dos' || event.data.error === 'try_again_later' || event.data.error === 'frame_load_error' || event.data.error === 'script_load_error' || event.data.error === 'recaptcha_proxy_error')) {
             if (typeof window._handleDosAutoSkip === 'function') {
                 window._handleDosAutoSkip(event.data.iframeId, event.source);
             }
@@ -445,7 +445,7 @@ try {
             msg = event.data;
         }
 
-        if (msg && (msg.indexOf('try_again_later') !== -1 || msg.indexOf('ctor-captcha-dos') !== -1)) {
+        if (msg && (msg.indexOf('try_again_later') !== -1 || msg.indexOf('ctor-captcha-dos') !== -1 || msg.indexOf('frame-load-error') !== -1 || msg.indexOf('captcha-load-error') !== -1 || msg.indexOf('server ip address could not be found') !== -1 || msg.indexOf('recaptcha_proxy') !== -1 || msg.indexOf('err_name_not_resolved') !== -1)) {
             if (typeof window._handleDosAutoSkip === 'function') {
                 window._handleDosAutoSkip(iframeId, event.source);
             }
@@ -453,7 +453,12 @@ try {
         }
 
         if (msg) {
-            if (msg === 'frame-load-error') return;
+            if (msg === 'frame-load-error' || msg === 'captcha-load-error') {
+                if (typeof window._handleDosAutoSkip === 'function') {
+                    window._handleDosAutoSkip(iframeId, event.source);
+                }
+                return;
+            }
 
             var allWebviews = Array.from(document.querySelectorAll('iframe[data-is-webview="true"], iframe.ct-webview-frame, webview'));
             if (allWebviews.length === 0) {
