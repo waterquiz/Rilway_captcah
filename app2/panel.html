@@ -706,18 +706,11 @@ try {
             if (doc.querySelector('.rc-doscaptcha, .rc-doscaptcha-header, .rc-doscaptcha-body, .rc-doscaptcha-footer')) {
                 return true;
             }
-            var audioErr = doc.querySelector('.rc-audiochallenge-error-message');
-            if (audioErr && (audioErr.offsetWidth > 0 || (audioErr.textContent || '').trim().length > 0)) {
-                return true;
-            }
-            var elList = doc.querySelectorAll('h3, .rc-doscaptcha-header-text, .rc-doscaptcha-body-text, .rc-audiochallenge-error-message, p, div');
+            var elList = doc.querySelectorAll('h3, .rc-doscaptcha-header-text, .rc-doscaptcha-body-text, p, div');
             for (var i = 0; i < elList.length; i++) {
                 var txt = (elList[i].innerText || elList[i].textContent || '').toLowerCase();
                 if (txt.indexOf('try again later') !== -1 ||
                     txt.indexOf('automated queries') !== -1 ||
-                    txt.indexOf('multiple correct solutions') !== -1 ||
-                    txt.indexOf('please solve more') !== -1 ||
-                    txt.indexOf('multiple correct') !== -1 ||
                     (txt.indexOf('try again') !== -1 && txt.indexOf('computer or network') !== -1)) {
                     return true;
                 }
