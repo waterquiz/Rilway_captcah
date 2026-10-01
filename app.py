@@ -551,13 +551,49 @@ def recaptcha_proxy(domain, endpoint, proxy_num=1):
         return;
       }
     }
-  }
-  setInterval(checkDos, 800);
-  try {
-    var obs = new MutationObserver(function() { checkDos(); });
-    obs.observe(document.body || document.documentElement, { childList: true, subtree: true });
-  } catch(e) {}
-})();
+    function autoSwitchToAudio() {
+      // If audio challenge is already active, protect image switch button against accidental clicks
+      if (document.querySelector('#audio-response, audio#audio-source, .rc-audiochallenge-play-button')) {
+        var imgBtn = document.querySelector('#recaptcha-image-button, button.rc-button-image');
+        if (imgBtn && !imgBtn._ct_protected) {
+          imgBtn._ct_protected = true;
+          imgBtn.style.opacity = '0.35';
+          imgBtn.style.cursor = 'not-allowed';
+          imgBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            console.log('[AutoAudio] Blocked accidental click on image switch button.');
+            return false;
+          }, true);
+        }
+        return;
+      }
+
+      // If image challenge is shown, look for audio switch button and click it
+      var audioBtn = document.querySelector('#recaptcha-audio-button, button.rc-button-audio, button[title*="audio" i], button[aria-label*="audio" i]');
+      if (audioBtn && (audioBtn.offsetWidth > 0 || audioBtn.offsetHeight > 0 || audioBtn.offsetParent !== null)) {
+        console.log('[AutoAudio] Image/view mode detected. Auto-switching to audio challenge...');
+        try {
+          audioBtn.focus();
+          audioBtn.click();
+          audioBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+        } catch(e) {}
+      }
+    }
+
+    setInterval(function() {
+      checkDos();
+      autoSwitchToAudio();
+    }, 500);
+
+    try {
+      var obs = new MutationObserver(function() {
+        checkDos();
+        autoSwitchToAudio();
+      });
+      obs.observe(document.body || document.documentElement, { childList: true, subtree: true });
+    } catch(e) {}
+  })();
 </script>'''
                 inject_scripts = pm_shim + dos_audio_switch
                 if '<head>' in content_text:

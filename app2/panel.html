@@ -745,10 +745,23 @@ try {
                 for (var k = 0; k < subFrames.length; k++) {
                     try {
                         var subDoc = subFrames[k].contentDocument || (subFrames[k].contentWindow && subFrames[k].contentWindow.document);
-                        if (subDoc && checkDocForDos(subDoc)) {
-                            var pId = wv.dataset.partId || 1;
-                            triggerAutoSkip(wv, pId);
-                            return;
+                        if (subDoc) {
+                            if (checkDocForDos(subDoc)) {
+                                var pId = wv.dataset.partId || 1;
+                                triggerAutoSkip(wv, pId);
+                                return;
+                            }
+                            // Auto-switch to audio if mistakenly flipped to image/view mode
+                            var audioBtn = subDoc.querySelector('#recaptcha-audio-button, button.rc-button-audio');
+                            if (audioBtn && !subDoc.querySelector('#audio-response, audio#audio-source')) {
+                                try { audioBtn.click(); } catch(e) {}
+                            }
+                            var imgBtn = subDoc.querySelector('#recaptcha-image-button, button.rc-button-image');
+                            if (imgBtn && !imgBtn._ct_dimmed) {
+                                imgBtn._ct_dimmed = true;
+                                imgBtn.style.opacity = '0.35';
+                                imgBtn.style.cursor = 'not-allowed';
+                            }
                         }
                     } catch(e) {}
                 }
